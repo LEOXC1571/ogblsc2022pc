@@ -85,7 +85,7 @@ def test(model, device, loader):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--device', type=int, default=0,
+    parser.add_argument('--device', type=int, default=5,
                         help='which gpu to use if any (default: 0)')
     parser.add_argument('--gnn', type=str, default='gin-virtual',
                         help='GNN gin, gin-virtual, or gcn, or gcn-virtual (default: gin-virtual)')
@@ -120,9 +120,9 @@ def main():
 
     device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
 
-    dataset = PygPCQM4Mv2Dataset(root='dataset/')
+    dataset = PygPCQM4Mv2Dataset(root='../../../../data/xc/molecule_datasets')
 
-    split_idx = dataset.split_idx()
+    split_idx = dataset.get_idx_split()
 
     evaluator = PCQM4Mv2Evaluator()
 
