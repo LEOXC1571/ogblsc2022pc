@@ -38,28 +38,111 @@ except ImportError:
 
 
 class BertLayerNorm(nn.Module):
-    def __init__(self, hidden_dim, eps):
+    def __init__(self, hidden_dim, eps=1e-12):
         super(BertLayerNorm, self).__init__()
+        self.shape = torch.Size((hidden_dim,))
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_dim))
+        self.bias = nn.Parameter(torch.zeros(hidden_dim))
+        self.apex_enabled = APEX_IS_AVAILABLE
+
+    @torch.jit.unused
+    def fused_layer_norm(self, x):
+        return FusedLayerNormAffineFunction.apply(
+            x, self.weight, self.bias, self.shape, self.eps
+        )
+
+    def forward(self, x):
+        if self.apex_enabled and not torch.jit.is_scripting():
+            x = self.fused_layer_norm(x)
+        else:
+            u = x.mean(-1, keepdim=True)
+            s = (x - u),pow(2).mean(-1, keepdim=True)
+            x = (x - u) / torch.sqrt(s + self.eps)
+            x = self.weight * x + self.bias
+        return x
+
+
+class LinearActivation(nn.Module):
+    def __init__(self, in_features, out_features, bias=True):
+        super(LinearActivation, self).__init__()
 
 
 class GTOut(nn.Module):
     def __init__(self, hidden_dim, drop_ratio):
         super(GTOut, self).__init__()
+        self.dense = nn.Linear(4 * hidden_dim, hidden_dim)
+        self.LayerNorm = BertLayerNorm(hidden_dim, eps=1e-12)
+        self.dropout = nn.Dropout(drop_ratio)
+
+    def forward(self, hidden_states, input_tensor):
+        hidden_states = self.dense(hidden_states)
+        hidden_states = self.dropout(hidden_states)
+        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        return hidden_states
 
 
 class Intermediate(nn.Module):
     def __init__(self, hidden_dim):
         super(Intermediate, self).__init__()
+        self.dense_act = LinearActivation(hidden_dim, 4 * hidden_dim)
+
+    def forward(self, hidden_states):
+        hidden_states = self.dense_act(hidden_states)
+        return hidden_states
 
 
 class AttentionOut(nn.Module):
     def __init__(self, hidden_dim, drop_ratio=0.):
         super(AttentionOut, self).__init__()
+        self.dense = nn.Linear(hidden_dim, hidden_dim)
+        self.LayerNorm = BertLayerNorm(hidden_dim, eps=1e-12)
+        self.dropout = nn.Dropout(drop_ratio)
+
+    def forward(self, hidden_states, input_tensor):
+        hidden_states = self.dense(hidden_states)
+        hidden_states = self.dropout(hidden_states)
+        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        return hidden_states
 
 
 class GraphAttentionConv(MessagePassing):
     def __init__(self, hidden_dim, heads=3, dropout=0.):
         super(GraphAttentionConv, self).__init__()
+        assert hidden_dim % heads == 0
+        self.hidden_dim = hidden_dim
+        self.heads = heads
+        self.attention_drop = nn.Dropout(dropout)
+
+        self.query = nn.Linear(hidden_dim, heads * int(hidden_dim / heads))
+        self.key = nn.Linear(hidden_dim, heads * int(hidden_dim / heads))
+        self.value = nn.Linear(hidden_dim, heads * int(hidden_dim / heads))
+
+        self.init_params()
+
+    def init_params(self):
+        nn.init.xavier_uniform_(self.query.weight.data)
+        nn.init.xavier_uniform_(self.key.weight.data)
+        nn.init.xavier_uniform_(self.value.weight.data)
+
+    def message(self, edge_idx_i, x_i, x_j, pseudo, size_i):
+        query = self.query(x_i).view(-1, self.heads, int(self.hidden_dim / self.heads))
+        key = self.key(x_j + pseudo).view(-1, self.heads, int(self.hidden_dim / self.heads))
+        value = self.value(x_j + pseudo).view(-1, self.heads, int(self.hidden_dim / self.heads))
+
+        alpha = (query * key).sum(dim=-1) / math.sqrt(int(self.hidden_dim / self.heads))
+        alpha = softmax(alpha, edge_idx_i, size_i)
+        alpha = self.attention_drop(alpha.view(-1, self.heads, 1))
+
+        return alpha * value
+
+    def update(self, aggr_out):
+        aggr_out = aggr_out.view(-1, self.heads * int(self.hidden_dim / self.heads))
+        return aggr_out
+
+    def forward(self, x, edge_idx, edge_attr, size=None):
+        pseudo = edge_attr.unsqueeze(-1) if edge_attr.dim() == 1 else edge_attr
+        return self.propagate(edge_idx, size=size, x=x, pseudo=pseudo)
 
 
 class GTLayer(nn.Module):
@@ -86,18 +169,42 @@ class GTLayer(nn.Module):
 
 
 class MolGNet(nn.Module):
-    def __init__(self, num_layer, emb_dim, heads, num_message_passing, drop_ratio=0):
+    def __init__(self, num_layer, emb_dim, heads, num_message_passing, num_tasks, drop_ratio=0, graph_pooling='mean'):
         super(MolGNet, self).__init__()
         self.num_layer = num_layer
         self.drop_ratio = drop_ratio
+        self.num_tasks = num_tasks
+        self.emb_dim = emb_dim
         self.x_embedding = nn.Embedding(178, emb_dim)
         self.x_seg_embedding = nn.Embedding(seg_size, emb_dim)
         self.edge_embedding = nn.Embedding(18, emb_dim)
         self.edge_seg_embedding = nn.Embedding(seg_size, emb_dim)
 
+        if self.num_layer < 2:
+            raise ValueError('Number of GNN layers must be greater than 1.')
+        self.dummy = False
+        self.mult = 1
+
         self.init_params()
 
-        self.gnn = nn.ModuleList([GTLayer(emb_dim, heads, num_message_passing, drop_ratio) for _ in range(num_layer)])
+        self.gnns = nn.ModuleList([GTLayer(emb_dim, heads, num_message_passing, drop_ratio) for _ in range(num_layer)])
+        self.graph_pred_linear = nn.Linear(self.mult * self.emb_dim, self.num_tasks)
+
+        if graph_pooling == 'sum':
+            self.pool = global_add_pool
+        elif graph_pooling == 'mean':
+            self.pool = global_mean_pool
+        elif graph_pooling == 'max':
+            self.pool = global_max_pool
+        elif graph_pooling == 'attention':
+            self.pool = GlobalAttention(gate_nn=nn.Linear(emb_dim, 1))
+        elif graph_pooling == 'set2set':
+            self.pool = Set2Set(emb_dim, 3)
+            self.mult = 2
+        elif graph_pooling == 'collection':
+            self.dummy = True
+        else:
+            raise ValueError('Invalid graph pooling type.')
 
     def init_params(self):
         nn.init.xavier_uniform_(self.x_embedding.weight.data)
@@ -106,8 +213,25 @@ class MolGNet(nn.Module):
         nn.init.xavier_uniform_(self.edge_seg_embedding.weight.data)
 
     def forward(self, *argv):
-        if len(argv) == 5:
-            x, edge_idx, edge_attr, node_seg, edge_seg = argv[0], argv[1], argv[2], argv[3], argv[4]
+        if len(argv) == 6:
+            x, edge_idx, edge_attr, batch, node_seg, edge_seg, dummy_indice = \
+                argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]
         elif len(argv) == 1:
             data = argv[0]
+            x, edge_idx, edge_attr, batch, node_seg, edge_seg, dummy_indice = \
+                data.x, data.edge_index, data.edge_attr, data.batch, data.node_seg, data.edge_seg, data.dummy_node_indices
+        else:
+            raise ValueError('Unmatched number of arguments')
+
+        x = self.x_embedding(x).sum(1) + self.x_seg_embedding(node_seg)
+        edge_attr = self.edge_attr(edge_attr).sum(1) + self.edge_seg_embedding(edge_seg)
+
+        for gnn in self.gnns:
+            x = gnn(x, edge_idx, edge_attr)
+
+        node_representation = x
+        if self.dummy:
+            return self.graph_pred_linear(node_representation[dummy_indice])
+        else:
+            return self.graph_pred_linear(self.pool(node_representation, batch))
 

@@ -89,8 +89,14 @@ def main():
                         help='GNN gin, gin-virtual, or gcn, or gcn-virtual (default: gin-virtual)')
     parser.add_argument('--graph_pooling', type=str, default='sum',
                         help='graph pooling strategy mean or sum (default: sum)')
+    parser.add_argument('--lr', type=float, default=0.001,
+                        help='learning rate (default: 0.001)')
     parser.add_argument('--drop_ratio', type=float, default=0,
                         help='dropout ratio (default: 0)')
+    parser.add_argument('--heads', type=int, default=10,
+                        help='multi heads (default: 10)')
+    parser.add_argument('--num_message_passing', type=int, default=3,
+                        help='message passing steps (default:3)')
     parser.add_argument('--num_layers', type=int, default=5,
                         help='number of GNN message passing layers (default: 5)')
     parser.add_argument('--emb_dim', type=int, default=600,
@@ -152,6 +158,7 @@ def main():
         'graph_pooling': args.graph_pooling
     }
 
+
     if args.gnn == 'gin':
         model = GNN(gnn_type='gin', virtual_node=False, **shared_params).to(device)
     elif args.gnn == 'gin-virtual':
@@ -160,6 +167,10 @@ def main():
         model = GNN(gnn_type='gcn', virtual_node=False, **shared_params).to(device)
     elif args.gnn == 'gcn-virtual':
         model = GNN(gnn_type='gcn', virtual_node=True, **shared_params).to(device)
+    elif args.gnn == 'GTransformer':
+        from model.GTransformer import MolGNet
+        num_tasks = 2
+        model = MolGNet(args.num_layers, args.emb_dim, args.heads, args.num_message_passing, num_tasks, args.drop_ratio, args.graph_pooling)
     else:
         raise ValueError('Invalid GNN type')
 
