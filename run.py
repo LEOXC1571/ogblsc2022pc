@@ -7,16 +7,14 @@
 import torch
 from torch_geometric.loader import DataLoader
 import torch.optim as optim
-import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import StepLR
 
-from gnn import GNN
+from pcqm4m.gnn import GNN
 
 import os
 from tqdm import tqdm
 import argparse
-import time
 import numpy as np
 import random
 
