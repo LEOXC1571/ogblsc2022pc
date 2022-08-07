@@ -8,6 +8,7 @@ import torch
 from torch_geometric.loader import DataLoader
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data.sampler import RandomSampler
 from torch.optim.lr_scheduler import StepLR
 
 from pcqm4m.gnn import GNN
@@ -19,7 +20,11 @@ import numpy as np
 import random
 
 from ogb.lsc import PygPCQM4Mv2Dataset, PCQM4Mv2Evaluator
+from ogb.utils import smiles2graph
 
+from dataset.pcqm4mv2 import PCQM4Mv2Dataset
+from utils.loader import DataLoaderMasking
+from utils.compose import *
 
 reg_criterion = torch.nn.L1Loss()
 
@@ -83,7 +88,7 @@ def test(model, device, loader):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--device', type=int, default=5,
+    parser.add_argument('--device', type=int, default=2,
                         help='which gpu to use if any (default: 0)')
     parser.add_argument('--gnn', type=str, default='gin-virtual',
                         help='GNN gin, gin-virtual, or gcn, or gcn-virtual (default: gin-virtual)')
@@ -106,7 +111,7 @@ def main():
                         help='input batch size for training (default: 256)')
     parser.add_argument('--epochs', type=int, default=100,
                         help='number of epochs to train (default: 100)')
-    parser.add_argument('--num_workers', type=int, default=0,
+    parser.add_argument('--num_workers', type=int, default=1,
                         help='number of workers (default: 0)')
     parser.add_argument('--log_dir', type=str, default="",
                         help='tensorboard log directory')
@@ -124,7 +129,22 @@ def main():
 
     device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
 
-    dataset = PygPCQM4Mv2Dataset(root='../../../../data/xc/molecule_datasets')
+    transform = Compose(
+        [
+            Self_loop(),
+            Add_seg_id(),
+            Add_collection_node(num_atom_type=119, bidirection=False)
+        ]
+    )
+
+    if args.gnn == 'GTransformer':
+        dataset = PCQM4Mv2Dataset(root='../../../../data/xc/molecule_datasets',
+                                  smiles2graph=smiles2graph, transform=transform)
+    else:
+        dataset = PygPCQM4Mv2Dataset(root='../../../../data/xc/molecule_datasets')
+
+    if args.gnn == 'GTransformer':
+        train_sampler = RandomSampler(dataset)
 
     split_idx = dataset.get_idx_split()
 
@@ -135,12 +155,19 @@ def main():
         subset_idx = torch.randperm(len(split_idx["train"]))[:int(subset_ratio * len(split_idx["train"]))]
         train_loader = DataLoader(dataset[split_idx["train"][subset_idx]], batch_size=args.batch_size, shuffle=True,
                                   num_workers=args.num_workers)
-    else:
-        train_loader = DataLoader(dataset[split_idx["train"]], batch_size=args.batch_size, shuffle=True,
+        valid_loader = DataLoader(dataset[split_idx["valid"]], batch_size=args.batch_size, shuffle=False,
                                   num_workers=args.num_workers)
-
-    valid_loader = DataLoader(dataset[split_idx["valid"]], batch_size=args.batch_size, shuffle=False,
-                              num_workers=args.num_workers)
+    else:
+        if args.gnn == 'GTransformer':
+            train_loader = DataLoaderMasking(dataset[split_idx['train']], batch_size=args.batch_size,
+                                             shuffle=True, num_workers=args.num_workers)
+            valid_loader = DataLoaderMasking(dataset[split_idx['valid']], batch_size=args.batch_size,
+                                             shuffle=False, num_workers = args.num_workers)
+        else:
+            train_loader = DataLoader(dataset[split_idx["train"]], batch_size=args.batch_size,
+                                      shuffle=True, num_workers=args.num_workers)
+            valid_loader = DataLoader(dataset[split_idx["valid"]], batch_size=args.batch_size,
+                                      shuffle=False, num_workers=args.num_workers)
 
     if args.save_test_dir != '':
         testdev_loader = DataLoader(dataset[split_idx["test-dev"]], batch_size=args.batch_size, shuffle=False,
@@ -169,8 +196,9 @@ def main():
         model = GNN(gnn_type='gcn', virtual_node=True, **shared_params).to(device)
     elif args.gnn == 'GTransformer':
         from model.GTransformer import MolGNet
-        num_tasks = 2
-        model = MolGNet(args.num_layers, args.emb_dim, args.heads, args.num_message_passing, num_tasks, args.drop_ratio, args.graph_pooling)
+        num_tasks = 1
+        model = MolGNet(args.num_layers, args.emb_dim, args.heads, args.num_message_passing,
+                        num_tasks, args.drop_ratio, args.graph_pooling, device)
     else:
         raise ValueError('Invalid GNN type')
 

@@ -15,6 +15,7 @@ from torch_geometric.nn import MessagePassing, global_add_pool, global_mean_pool
 from torch_geometric.nn.inits import glorot, zeros
 from torch_geometric.utils import add_self_loops, degree, softmax
 
+
 num_atom_type = 120 + 1 + 1
 num_chirality_tag = 3
 
@@ -125,13 +126,17 @@ class GraphAttentionConv(MessagePassing):
         nn.init.xavier_uniform_(self.key.weight.data)
         nn.init.xavier_uniform_(self.value.weight.data)
 
-    def message(self, edge_idx_i, x_i, x_j, pseudo, size_i):
+    def forward(self, x, edge_index, edge_attr, size=None):
+        pseudo = edge_attr.unsqueeze(-1) if edge_attr.dim() == 1 else edge_attr
+        return self.propagate(edge_index=edge_index, size=size, x=x, pseudo=pseudo)
+
+    def message(self, edge_index_i, x_i, x_j, pseudo, size_i):
         query = self.query(x_i).view(-1, self.heads, int(self.hidden_dim / self.heads))
         key = self.key(x_j + pseudo).view(-1, self.heads, int(self.hidden_dim / self.heads))
         value = self.value(x_j + pseudo).view(-1, self.heads, int(self.hidden_dim / self.heads))
 
         alpha = (query * key).sum(dim=-1) / math.sqrt(int(self.hidden_dim / self.heads))
-        alpha = softmax(alpha, edge_idx_i, size_i)
+        alpha = softmax(alpha, edge_index_i, num_nodes=size_i)
         alpha = self.attention_drop(alpha.view(-1, self.heads, 1))
 
         return alpha * value
@@ -139,10 +144,6 @@ class GraphAttentionConv(MessagePassing):
     def update(self, aggr_out):
         aggr_out = aggr_out.view(-1, self.heads * int(self.hidden_dim / self.heads))
         return aggr_out
-
-    def forward(self, x, edge_idx, edge_attr, size=None):
-        pseudo = edge_attr.unsqueeze(-1) if edge_attr.dim() == 1 else edge_attr
-        return self.propagate(edge_idx, size=size, x=x, pseudo=pseudo)
 
 
 class GTLayer(nn.Module):
@@ -169,16 +170,17 @@ class GTLayer(nn.Module):
 
 
 class MolGNet(nn.Module):
-    def __init__(self, num_layer, emb_dim, heads, num_message_passing, num_tasks, drop_ratio=0, graph_pooling='mean'):
+    def __init__(self, num_layer, emb_dim, heads, num_message_passing, num_tasks, drop_ratio=0, graph_pooling='mean', device='cpu'):
         super(MolGNet, self).__init__()
         self.num_layer = num_layer
         self.drop_ratio = drop_ratio
         self.num_tasks = num_tasks
         self.emb_dim = emb_dim
-        self.x_embedding = nn.Embedding(178, emb_dim)
-        self.x_seg_embedding = nn.Embedding(seg_size, emb_dim)
-        self.edge_embedding = nn.Embedding(18, emb_dim)
-        self.edge_seg_embedding = nn.Embedding(seg_size, emb_dim)
+        self.device = device
+        self.x_embedding = nn.Embedding(178, emb_dim).to(self.device)
+        self.x_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
+        self.edge_embedding = nn.Embedding(18, emb_dim).to(self.device)
+        self.edge_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
 
         if self.num_layer < 2:
             raise ValueError('Number of GNN layers must be greater than 1.')
@@ -187,7 +189,7 @@ class MolGNet(nn.Module):
 
         self.init_params()
 
-        self.gnns = nn.ModuleList([GTLayer(emb_dim, heads, num_message_passing, drop_ratio) for _ in range(num_layer)])
+        self.gnns = nn.ModuleList([GTLayer(emb_dim, heads, num_message_passing, drop_ratio) for _ in range(num_layer)]).to(self.device)
         self.graph_pred_linear = nn.Linear(self.mult * self.emb_dim, self.num_tasks)
 
         if graph_pooling == 'sum':
@@ -219,12 +221,13 @@ class MolGNet(nn.Module):
         elif len(argv) == 1:
             data = argv[0]
             x, edge_idx, edge_attr, batch, node_seg, edge_seg, dummy_indice = \
-                data.x, data.edge_index, data.edge_attr, data.batch, data.node_seg, data.edge_seg, data.dummy_node_indices
+                data.x, data.edge_index, data.edge_attr, data.batch, data.node_seg, \
+                data.edge_seg, data.dummy_node_indices
         else:
             raise ValueError('Unmatched number of arguments')
 
         x = self.x_embedding(x).sum(1) + self.x_seg_embedding(node_seg)
-        edge_attr = self.edge_attr(edge_attr).sum(1) + self.edge_seg_embedding(edge_seg)
+        edge_attr = self.edge_embedding(edge_attr).sum(1) + self.edge_seg_embedding(edge_seg)
 
         for gnn in self.gnns:
             x = gnn(x, edge_idx, edge_attr)
