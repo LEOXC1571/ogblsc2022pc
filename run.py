@@ -88,7 +88,7 @@ def test(model, device, loader):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--device', type=int, default=2,
+    parser.add_argument('--device', type=int, default=1,
                         help='which gpu to use if any (default: 0)')
     parser.add_argument('--gnn', type=str, default='gin-virtual',
                         help='GNN gin, gin-virtual, or gcn, or gcn-virtual (default: gin-virtual)')

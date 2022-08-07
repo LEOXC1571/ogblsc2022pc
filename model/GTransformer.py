@@ -58,15 +58,55 @@ class BertLayerNorm(nn.Module):
             x = self.fused_layer_norm(x)
         else:
             u = x.mean(-1, keepdim=True)
-            s = (x - u),pow(2).mean(-1, keepdim=True)
+            s = (x - u).pow(2).mean(-1, keepdim=True)
             x = (x - u) / torch.sqrt(s + self.eps)
             x = self.weight * x + self.bias
         return x
 
 
+def gelu(x):
+    return x * 0.5 * (1.0 + torch.erf(x / 1.41421))
+
+
+def bias_gelu(bias, y):
+    x = bias + y
+    return x * 0.5 * (1.0 + torch.erf(x / 1.41421))
+
+
 class LinearActivation(nn.Module):
-    def __init__(self, in_features, out_features, bias=True):
+    def __init__(self, in_features, out_features,  bias=True):
         super(LinearActivation, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features                                                                 #
+        if bias:  # compatibility
+            self.biased_act_fn =bias_gelu
+        else:
+            self.act_fn = gelu
+        self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
+        if bias:
+            self.bias = nn.Parameter(torch.Tensor(out_features))
+        else:
+            self.register_parameter('bias', None)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        if self.bias is not None:
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
+            bound = 1 / math.sqrt(fan_in)
+            nn.init.uniform_(self.bias, -bound, bound)
+
+    def forward(self, input):
+        if not self.bias is None:
+            return self.biased_act_fn(self.bias, F.linear(input, self.weight, None))
+        else:
+            return self.act_fn(F.linear(input, self.weight, self.bias))
+
+    def extra_repr(self):
+        return 'in_features={}, out_features={}, bias={}'.format(
+            self.in_features, self.out_features, self.bias is not None
+        )
+
 
 
 class GTOut(nn.Module):
@@ -113,6 +153,7 @@ class GraphAttentionConv(MessagePassing):
         assert hidden_dim % heads == 0
         self.hidden_dim = hidden_dim
         self.heads = heads
+        self.node_dim = 0
         self.attention_drop = nn.Dropout(dropout)
 
         self.query = nn.Linear(hidden_dim, heads * int(hidden_dim / heads))
@@ -190,7 +231,7 @@ class MolGNet(nn.Module):
         self.init_params()
 
         self.gnns = nn.ModuleList([GTLayer(emb_dim, heads, num_message_passing, drop_ratio) for _ in range(num_layer)]).to(self.device)
-        self.graph_pred_linear = nn.Linear(self.mult * self.emb_dim, self.num_tasks)
+        self.graph_pred_linear = nn.Linear(self.mult * self.emb_dim, self.num_tasks).to(self.device)
 
         if graph_pooling == 'sum':
             self.pool = global_add_pool
