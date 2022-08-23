@@ -90,13 +90,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', type=int, default=1,
                         help='which gpu to use if any (default: 0)')
-    parser.add_argument('--gnn', type=str, default='gin-virtual',
+    parser.add_argument('--gnn', type=str, default='GTransformer',
                         help='GNN gin, gin-virtual, or gcn, or gcn-virtual (default: gin-virtual)')
     parser.add_argument('--graph_pooling', type=str, default='sum',
                         help='graph pooling strategy mean or sum (default: sum)')
     parser.add_argument('--lr', type=float, default=0.001,
                         help='learning rate (default: 0.001)')
-    parser.add_argument('--drop_ratio', type=float, default=0,
+    parser.add_argument('--drop_ratio', type=float, default=0.1,
                         help='dropout ratio (default: 0)')
     parser.add_argument('--heads', type=int, default=10,
                         help='multi heads (default: 10)')
@@ -106,17 +106,17 @@ def main():
                         help='number of GNN message passing layers (default: 5)')
     parser.add_argument('--emb_dim', type=int, default=600,
                         help='dimensionality of hidden units in GNNs (default: 600)')
-    parser.add_argument('--train_subset', action='store_true')
-    parser.add_argument('--batch_size', type=int, default=256,
+    parser.add_argument('--train_subset', default=False,action='store_true')
+    parser.add_argument('--batch_size', type=int, default=768,
                         help='input batch size for training (default: 256)')
     parser.add_argument('--epochs', type=int, default=100,
                         help='number of epochs to train (default: 100)')
-    parser.add_argument('--num_workers', type=int, default=1,
+    parser.add_argument('--num_workers', type=int, default=4,
                         help='number of workers (default: 0)')
-    parser.add_argument('--log_dir', type=str, default="",
+    parser.add_argument('--log_dir', type=str, default="log",
                         help='tensorboard log directory')
-    parser.add_argument('--checkpoint_dir', type=str, default='', help='directory to save checkpoint')
-    parser.add_argument('--save_test_dir', type=str, default='', help='directory to save test submission file')
+    parser.add_argument('--checkpoint_dir', type=str, default='ckpt', help='directory to save checkpoint')
+    parser.add_argument('--save_test_dir', type=str, default='saved', help='directory to save test submission file')
     args = parser.parse_args()
 
     print(args)
@@ -137,14 +137,13 @@ def main():
         ]
     )
 
-    if args.gnn == 'GTransformer':
-        dataset = PCQM4Mv2Dataset(root='../../../../data/xc/molecule_datasets',
-                                  smiles2graph=smiles2graph, transform=transform)
-    else:
-        dataset = PygPCQM4Mv2Dataset(root='../../../../data/xc/molecule_datasets')
+    # if args.gnn == 'GTransformer':
+    dataset = PCQM4Mv2Dataset(root='../../../../data/xc/molecule_datasets',
+                              smiles2graph=smiles2graph, transform=transform)
+    # else:
+    #     dataset = PygPCQM4Mv2Dataset(root='../../../../data/xc/molecule_datasets')
 
-    if args.gnn == 'GTransformer':
-        train_sampler = RandomSampler(dataset)
+    # train_sampler = RandomSampler(dataset)
 
     split_idx = dataset.get_idx_split()
 
@@ -158,16 +157,15 @@ def main():
         valid_loader = DataLoader(dataset[split_idx["valid"]], batch_size=args.batch_size, shuffle=False,
                                   num_workers=args.num_workers)
     else:
-        if args.gnn == 'GTransformer':
-            train_loader = DataLoaderMasking(dataset[split_idx['train']], batch_size=args.batch_size,
+        train_loader = DataLoaderMasking(dataset[split_idx['train']], batch_size=args.batch_size,
                                              shuffle=True, num_workers=args.num_workers)
-            valid_loader = DataLoaderMasking(dataset[split_idx['valid']], batch_size=args.batch_size,
+        valid_loader = DataLoaderMasking(dataset[split_idx['valid']], batch_size=args.batch_size,
                                              shuffle=False, num_workers = args.num_workers)
-        else:
-            train_loader = DataLoader(dataset[split_idx["train"]], batch_size=args.batch_size,
-                                      shuffle=True, num_workers=args.num_workers)
-            valid_loader = DataLoader(dataset[split_idx["valid"]], batch_size=args.batch_size,
-                                      shuffle=False, num_workers=args.num_workers)
+        # else:
+        #     train_loader = DataLoader(dataset[split_idx["train"]], batch_size=args.batch_size,
+        #                               shuffle=True, num_workers=args.num_workers)
+        #     valid_loader = DataLoader(dataset[split_idx["valid"]], batch_size=args.batch_size,
+        #                               shuffle=False, num_workers=args.num_workers)
 
     if args.save_test_dir != '':
         testdev_loader = DataLoader(dataset[split_idx["test-dev"]], batch_size=args.batch_size, shuffle=False,
@@ -178,23 +176,8 @@ def main():
     if args.checkpoint_dir != '':
         os.makedirs(args.checkpoint_dir, exist_ok=True)
 
-    shared_params = {
-        'num_layers': args.num_layers,
-        'emb_dim': args.emb_dim,
-        'drop_ratio': args.drop_ratio,
-        'graph_pooling': args.graph_pooling
-    }
 
-
-    if args.gnn == 'gin':
-        model = GNN(gnn_type='gin', virtual_node=False, **shared_params).to(device)
-    elif args.gnn == 'gin-virtual':
-        model = GNN(gnn_type='gin', virtual_node=True, **shared_params).to(device)
-    elif args.gnn == 'gcn':
-        model = GNN(gnn_type='gcn', virtual_node=False, **shared_params).to(device)
-    elif args.gnn == 'gcn-virtual':
-        model = GNN(gnn_type='gcn', virtual_node=True, **shared_params).to(device)
-    elif args.gnn == 'GTransformer':
+    if args.gnn == 'GTransformer':
         from model.GTransformer import MolGNet
         num_tasks = 1
         model = MolGNet(args.num_layers, args.emb_dim, args.heads, args.num_message_passing,
