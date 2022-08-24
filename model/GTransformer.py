@@ -222,7 +222,10 @@ class MolGNet(nn.Module):
         self.x_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
         self.edge_embedding = nn.Embedding(18, emb_dim).to(self.device)
         self.edge_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
+        self.x_embedding = nn.Embedding(178, emb_dim).to(self.device)
+        self.x_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
         self.smile_embedding = nn.Embedding(178, emb_dim).to(self.device)
+        self.smile_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
 
         if self.num_layer < 2:
             raise ValueError('Number of GNN layers must be greater than 1.')
@@ -231,6 +234,7 @@ class MolGNet(nn.Module):
 
         self.init_params()
 
+        self.LSTM = nn.LSTM()
         self.gnns = nn.ModuleList([GTLayer(emb_dim, heads, num_message_passing, drop_ratio) for _ in range(num_layer)]).to(self.device)
         self.graph_pred_linear = nn.Linear(self.mult * self.emb_dim, self.num_tasks).to(self.device)
 
@@ -255,11 +259,13 @@ class MolGNet(nn.Module):
         nn.init.xavier_uniform_(self.x_seg_embedding.weight.data)
         nn.init.xavier_uniform_(self.edge_embedding.weight.data)
         nn.init.xavier_uniform_(self.edge_seg_embedding.weight.data)
+        nn.init.xavier_uniform_(self.smile_embedding.weight.data)
+        nn.init.xavier_uniform_(self.smile_seg_embedding.weight.data)
 
     def split_tensor(self, x: torch.Tensor, batch: torch.Tensor):
-        dup_count = torch.unique(batch, return_counts=True)[1]
-        split =x.split(dup_count, dim=0)
-        return split
+        dup_count = tuple(torch.unique(batch, return_counts=True)[1].cpu().numpy())
+        split = x.split(dup_count, dim=0)
+        return list(split)
 
     def forward(self, *argv):
         if len(argv) == 6:
@@ -273,8 +279,14 @@ class MolGNet(nn.Module):
         else:
             raise ValueError('Unmatched number of arguments')
 
+        x_seq = x
         x = self.x_embedding(x).sum(1) + self.x_seg_embedding(node_seg)
+        x_seq = self.smile_embedding(x_seq).sum(1) + self.smile_seg_embedding(node_seg)
         edge_attr = self.edge_embedding(edge_attr).sum(1) + self.edge_seg_embedding(edge_seg)
+
+        split_x_seq = self.split_tensor(x_seq, batch)
+
+        pad_sequence = nn.utils.rnn.pad_sequence(split_x_seq, batch_first=True)
 
         for gnn in self.gnns:
             x = gnn(x, edge_idx, edge_attr)
