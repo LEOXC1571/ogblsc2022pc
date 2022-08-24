@@ -222,6 +222,7 @@ class MolGNet(nn.Module):
         self.x_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
         self.edge_embedding = nn.Embedding(18, emb_dim).to(self.device)
         self.edge_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
+        self.smile_embedding = nn.Embedding(178, emb_dim).to(self.device)
 
         if self.num_layer < 2:
             raise ValueError('Number of GNN layers must be greater than 1.')
@@ -254,6 +255,11 @@ class MolGNet(nn.Module):
         nn.init.xavier_uniform_(self.x_seg_embedding.weight.data)
         nn.init.xavier_uniform_(self.edge_embedding.weight.data)
         nn.init.xavier_uniform_(self.edge_seg_embedding.weight.data)
+
+    def split_tensor(self, x: torch.Tensor, batch: torch.Tensor):
+        dup_count = torch.unique(batch, return_counts=True)[1]
+        split =x.split(dup_count, dim=0)
+        return split
 
     def forward(self, *argv):
         if len(argv) == 6:
