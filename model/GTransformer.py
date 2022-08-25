@@ -224,19 +224,21 @@ class MolGNet(nn.Module):
         self.edge_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
         self.x_embedding = nn.Embedding(178, emb_dim).to(self.device)
         self.x_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
-        self.smile_embedding = nn.Embedding(178, emb_dim).to(self.device)
-        self.smile_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
+        self.smile_embedding = nn.Embedding(178, 256).to(self.device)
+        # self.smile_seg_embedding = nn.Embedding(seg_size, 300).to(self.device)
 
         if self.num_layer < 2:
             raise ValueError('Number of GNN layers must be greater than 1.')
         self.dummy = False
         self.mult = 1
+        self.hidden_size = 128
 
         self.init_params()
 
-        self.LSTM = nn.LSTM()
+        self.LSTM = nn.LSTM(input_size=256, hidden_size=self.hidden_size, num_layers=2).to(self.device)
         self.gnns = nn.ModuleList([GTLayer(emb_dim, heads, num_message_passing, drop_ratio) for _ in range(num_layer)]).to(self.device)
         self.graph_pred_linear = nn.Linear(self.mult * self.emb_dim, self.num_tasks).to(self.device)
+        self.lstm_pred_linear = nn.Linear(self.hidden_size, self.num_tasks).to(self.device)
 
         if graph_pooling == 'sum':
             self.pool = global_add_pool
@@ -260,12 +262,13 @@ class MolGNet(nn.Module):
         nn.init.xavier_uniform_(self.edge_embedding.weight.data)
         nn.init.xavier_uniform_(self.edge_seg_embedding.weight.data)
         nn.init.xavier_uniform_(self.smile_embedding.weight.data)
-        nn.init.xavier_uniform_(self.smile_seg_embedding.weight.data)
+        # nn.init.xavier_uniform_(self.smile_seg_embedding.weight.data)
 
     def split_tensor(self, x: torch.Tensor, batch: torch.Tensor):
-        dup_count = tuple(torch.unique(batch, return_counts=True)[1].cpu().numpy())
+        length = torch.unique(batch, return_counts=True)[1].cpu()
+        dup_count = tuple(length.numpy())
         split = x.split(dup_count, dim=0)
-        return list(split)
+        return list(split), length
 
     def forward(self, *argv):
         if len(argv) == 6:
@@ -281,12 +284,16 @@ class MolGNet(nn.Module):
 
         x_seq = x
         x = self.x_embedding(x).sum(1) + self.x_seg_embedding(node_seg)
-        x_seq = self.smile_embedding(x_seq).sum(1) + self.smile_seg_embedding(node_seg)
+        x_seq = self.smile_embedding(x_seq).sum(1)
         edge_attr = self.edge_embedding(edge_attr).sum(1) + self.edge_seg_embedding(edge_seg)
 
-        split_x_seq = self.split_tensor(x_seq, batch)
+        split_x_seq, length = self.split_tensor(x_seq, batch)
 
         pad_sequence = nn.utils.rnn.pad_sequence(split_x_seq, batch_first=True)
+        packed_sequence = nn.utils.rnn.pack_padded_sequence(pad_sequence, lengths=length, batch_first=True, enforce_sorted=False)
+        lstm, _ = self.LSTM(packed_sequence)
+        unpack, _ = nn.utils.rnn.pad_packed_sequence(lstm, batch_first=True)
+        unpack = torch.sum(unpack, dim=1)
 
         for gnn in self.gnns:
             x = gnn(x, edge_idx, edge_attr)
@@ -295,5 +302,5 @@ class MolGNet(nn.Module):
         if self.dummy:
             return self.graph_pred_linear(node_representation[dummy_indice])
         else:
-            return self.graph_pred_linear(self.pool(node_representation, batch))
+            return self.graph_pred_linear(self.pool(node_representation, batch)) + self.lstm_pred_linear(unpack)
 
