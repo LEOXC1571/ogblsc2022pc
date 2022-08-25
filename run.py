@@ -4,29 +4,67 @@
 # @Author: Leo Xu
 # @Email: leoxc1571@163.com
 
-import torch
-from torch_geometric.loader import DataLoader
-import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
-from torch.utils.data.sampler import RandomSampler
-from torch.optim.lr_scheduler import StepLR
-
-from pcqm4m.gnn import GNN
-
 import os
-from tqdm import tqdm
+import random
 import argparse
 import numpy as np
-import random
+from tqdm import tqdm
 
-from ogb.lsc import PygPCQM4Mv2Dataset, PCQM4Mv2Evaluator
+import torch
+import torch.optim as optim
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel
+from torch.optim.lr_scheduler import StepLR
+from torch_geometric.loader import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data.sampler import RandomSampler
+
+
+from ogb.lsc import PCQM4Mv2Evaluator
 from ogb.utils import smiles2graph
 
 from dataset.pcqm4mv2 import PCQM4Mv2Dataset
 from utils.loader import DataLoaderMasking
 from utils.compose import *
 
+
 reg_criterion = torch.nn.L1Loss()
+
+os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+os.environ['CUDA_VISIBLE_DEVICES'] = '4, 7'
+world_size = 2
+best_prec1 = 0
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--gpu', type=int, default=1)
+parser.add_argument('--ngpus_per_node', type=int, default=2)
+parser.add_argument('--local_rank', type=int, default=-1)
+parser.add_argument('--num_workers', type=int, default=4)
+parser.add_argument('--multi_gpus', default=[4, 7])
+
+parser.add_argument('--epochs', type=int, default=100)
+parser.add_argument('--lr', type=float, default=0.001)
+parser.add_argument('--batch_size', type=int, default=768)
+parser.add_argument('--gnn', type=str, default='GTransformer')
+parser.add_argument('--drop_ratio', type=float, default=0.1)
+parser.add_argument('--heads', type=int, default=10)
+parser.add_argument('--graph_pooling', type=str, default='sum')
+parser.add_argument('--num_message_passing', type=int, default=3)
+parser.add_argument('--num_layers', type=int, default=5)
+parser.add_argument('--emb_dim', type=int, default=600)
+parser.add_argument('--train_subset', default=False, action='store_true')
+
+parser.add_argument('--log_dir', type=str, default="log")
+parser.add_argument('--checkpoint_dir', type=str, default='ckpt')
+parser.add_argument('--save_test_dir', type=str, default='saved')
+
+
+
+def dist_setup(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12345'
+    dist.init_process_group(backend='nccl', world_size=world_size, rank=rank)
 
 
 def train(model, device, loader, optimizer):
@@ -86,41 +124,18 @@ def test(model, device, loader):
     return y_pred
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--device', type=int, default=1,
-                        help='which gpu to use if any (default: 0)')
-    parser.add_argument('--gnn', type=str, default='GTransformer',
-                        help='GNN gin, gin-virtual, or gcn, or gcn-virtual (default: gin-virtual)')
-    parser.add_argument('--graph_pooling', type=str, default='sum',
-                        help='graph pooling strategy mean or sum (default: sum)')
-    parser.add_argument('--lr', type=float, default=0.001,
-                        help='learning rate (default: 0.001)')
-    parser.add_argument('--drop_ratio', type=float, default=0.1,
-                        help='dropout ratio (default: 0)')
-    parser.add_argument('--heads', type=int, default=10,
-                        help='multi heads (default: 10)')
-    parser.add_argument('--num_message_passing', type=int, default=3,
-                        help='message passing steps (default:3)')
-    parser.add_argument('--num_layers', type=int, default=5,
-                        help='number of GNN message passing layers (default: 5)')
-    parser.add_argument('--emb_dim', type=int, default=600,
-                        help='dimensionality of hidden units in GNNs (default: 600)')
-    parser.add_argument('--train_subset', default=False,action='store_true')
-    parser.add_argument('--batch_size', type=int, default=768,
-                        help='input batch size for training (default: 256)')
-    parser.add_argument('--epochs', type=int, default=100,
-                        help='number of epochs to train (default: 100)')
-    parser.add_argument('--num_workers', type=int, default=4,
-                        help='number of workers (default: 0)')
-    parser.add_argument('--log_dir', type=str, default="log",
-                        help='tensorboard log directory')
-    parser.add_argument('--checkpoint_dir', type=str, default='ckpt', help='directory to save checkpoint')
-    parser.add_argument('--save_test_dir', type=str, default='saved', help='directory to save test submission file')
-    args = parser.parse_args()
+def main(gpu, ngpus_per_node, args):
+    global best_prec1
+    args.gpu = gpu
+    args.rank = args.rank * ngpus_per_node + gpu
+    dist.init_process_group(backend='nccl', world_size=ngpus_per_node, rank=gpu)
+    print('rank', args.rank, ' use multi-gpus...')
 
-    print(args)
+    if args.rank % ngpus_per_node == 0:
+        print('Parameters preparation complete! Start loading networks...')
 
+    if args.gpu is not None:
+        torch.cuda.set_device(args.gpu)
     current_path = os.path.dirname(os.path.realpath(__file__))
     np.random.seed(42)
     torch.manual_seed(42)
@@ -246,4 +261,11 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    print("Start preparing for parameters...")
+    args = parser.parse_args()
+    args.local_rank = int(os.environ['LOCAL_RANK'])
+    print(args)
+
+    ngpus_per_node = args.ngpus_per_node
+
+    mp.spawn(main, args=(ngpus_per_node, args), nprocs=ngpus_per_node, join=True)
