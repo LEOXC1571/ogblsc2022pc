@@ -10,6 +10,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
+os.environ['CUDA_VISIBLE_DEVICES'] = '4,5'
 import torch
 import torch.optim as optim
 import torch.distributed as dist
@@ -19,7 +20,7 @@ from torch.optim.lr_scheduler import StepLR
 from torch_geometric.loader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data.sampler import RandomSampler
-
+from torch.utils.data.distributed import DistributedSampler
 
 from ogb.lsc import PCQM4Mv2Evaluator
 from ogb.utils import smiles2graph
@@ -31,35 +32,7 @@ from utils.compose import *
 
 reg_criterion = torch.nn.L1Loss()
 
-os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-os.environ['CUDA_VISIBLE_DEVICES'] = '4, 7'
-world_size = 2
-best_prec1 = 0
-
-parser = argparse.ArgumentParser()
-parser.add_argument('--gpu', type=int, default=1)
-parser.add_argument('--ngpus_per_node', type=int, default=2)
-parser.add_argument('--local_rank', type=int, default=-1)
-parser.add_argument('--num_workers', type=int, default=4)
-parser.add_argument('--multi_gpus', default=[4, 7])
-
-parser.add_argument('--epochs', type=int, default=100)
-parser.add_argument('--lr', type=float, default=0.001)
-parser.add_argument('--batch_size', type=int, default=768)
-parser.add_argument('--gnn', type=str, default='GTransformer')
-parser.add_argument('--drop_ratio', type=float, default=0.1)
-parser.add_argument('--heads', type=int, default=10)
-parser.add_argument('--graph_pooling', type=str, default='sum')
-parser.add_argument('--num_message_passing', type=int, default=3)
-parser.add_argument('--num_layers', type=int, default=5)
-parser.add_argument('--emb_dim', type=int, default=600)
-parser.add_argument('--train_subset', default=False, action='store_true')
-
-parser.add_argument('--log_dir', type=str, default="log")
-parser.add_argument('--checkpoint_dir', type=str, default='ckpt')
-parser.add_argument('--save_test_dir', type=str, default='saved')
-
-
+print(torch.cuda.device_count())
 
 def dist_setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -79,9 +52,7 @@ def train(model, device, loader, optimizer):
         loss = reg_criterion(pred, batch.y)
         loss.backward()
         optimizer.step()
-
         loss_accum += loss.detach().cpu().item()
-
     return loss_accum / (step + 1)
 
 
@@ -124,26 +95,34 @@ def test(model, device, loader):
     return y_pred
 
 
-def main(gpu, ngpus_per_node, args):
-    global best_prec1
-    args.gpu = gpu
-    args.rank = args.rank * ngpus_per_node + gpu
-    dist.init_process_group(backend='nccl', world_size=ngpus_per_node, rank=gpu)
-    print('rank', args.rank, ' use multi-gpus...')
+def main(rank, world_size, args):
+    # args.gpu = gpu
+    # args.rank = args.rank * ngpus_per_node + gpu
+    # rank = args.rank
 
-    if args.rank % ngpus_per_node == 0:
-        print('Parameters preparation complete! Start loading networks...')
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '10086'
 
-    if args.gpu is not None:
-        torch.cuda.set_device(args.gpu)
+    dist.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
+    # print('rank', args.rank, ' use multi-gpus...')
+
+    # if args.rank % world_size == 0:
+    print('Parameters preparation complete! Start loading networks...')
+    local_rank = dist.get_rank()
+    torch.cuda.set_device(local_rank)
+    device = torch.device("cuda", local_rank)
+
+    # torch.cuda.set_device(args.gpu)
+    # device = torch.device('cuda', args.gpu)
+    args.batch_size = int(args.batch_size / world_size)
+
     current_path = os.path.dirname(os.path.realpath(__file__))
     np.random.seed(42)
     torch.manual_seed(42)
     torch.cuda.manual_seed(42)
     random.seed(42)
 
-    device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
-
+    # device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
     transform = Compose(
         [
             Self_loop(),
@@ -152,13 +131,8 @@ def main(gpu, ngpus_per_node, args):
         ]
     )
 
-    # if args.gnn == 'GTransformer':
     dataset = PCQM4Mv2Dataset(root='../../../../data/xc/molecule_datasets',
                               smiles2graph=smiles2graph, transform=transform)
-    # else:
-    #     dataset = PygPCQM4Mv2Dataset(root='../../../../data/xc/molecule_datasets')
-
-    # train_sampler = RandomSampler(dataset)
 
     split_idx = dataset.get_idx_split()
 
@@ -172,15 +146,13 @@ def main(gpu, ngpus_per_node, args):
         valid_loader = DataLoader(dataset[split_idx["valid"]], batch_size=args.batch_size, shuffle=False,
                                   num_workers=args.num_workers)
     else:
-        train_loader = DataLoaderMasking(dataset[split_idx['train']], batch_size=args.batch_size,
-                                             shuffle=True, num_workers=args.num_workers)
-        valid_loader = DataLoaderMasking(dataset[split_idx['valid']], batch_size=args.batch_size,
-                                             shuffle=False, num_workers = args.num_workers)
-        # else:
-        #     train_loader = DataLoader(dataset[split_idx["train"]], batch_size=args.batch_size,
-        #                               shuffle=True, num_workers=args.num_workers)
-        #     valid_loader = DataLoader(dataset[split_idx["valid"]], batch_size=args.batch_size,
-        #                               shuffle=False, num_workers=args.num_workers)
+        train_sampler = DistributedSampler(dataset[split_idx['train']], shuffle=True)
+        valid_sampler = DistributedSampler(dataset[split_idx['valid']], shuffle=False)
+
+        train_loader = DataLoaderMasking(dataset[split_idx['train']], batch_size=args.batch_size, shuffle=False,
+                                         num_workers=args.num_workers, sampler=train_sampler)
+        valid_loader = DataLoaderMasking(dataset[split_idx['valid']], batch_size=args.batch_size, shuffle=False,
+                                         num_workers=args.num_workers, sampler=valid_sampler)
 
     if args.save_test_dir != '':
         testdev_loader = DataLoader(dataset[split_idx["test-dev"]], batch_size=args.batch_size, shuffle=False,
@@ -191,12 +163,12 @@ def main(gpu, ngpus_per_node, args):
     if args.checkpoint_dir != '':
         os.makedirs(args.checkpoint_dir, exist_ok=True)
 
-
     if args.gnn == 'GTransformer':
         from model.GTransformer import MolGNet
         num_tasks = 1
         model = MolGNet(args.num_layers, args.emb_dim, args.heads, args.num_message_passing,
                         num_tasks, args.drop_ratio, args.graph_pooling, device)
+        model = DistributedDataParallel(model, device_ids=[args.gpu])
     else:
         raise ValueError('Invalid GNN type')
 
@@ -261,11 +233,33 @@ def main(gpu, ngpus_per_node, args):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--gpu', type=int, default=None)
+    # parser.add_argument('--ngpus_per_node', type=int, default=2)
+    parser.add_argument('--rank', type=int, default=4)
+    parser.add_argument('--num_workers', type=int, default=4)
+    # parser.add_argument('--gpu_ids', default='0,1,2,3,4,5,6,7')
+    parser.add_argument("--local_rank", type=int, default=-1)
+
+    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--batch_size', type=int, default=768)
+    parser.add_argument('--gnn', type=str, default='GTransformer')
+    parser.add_argument('--drop_ratio', type=float, default=0.1)
+    parser.add_argument('--heads', type=int, default=10)
+    parser.add_argument('--graph_pooling', type=str, default='sum')
+    parser.add_argument('--num_message_passing', type=int, default=3)
+    parser.add_argument('--num_layers', type=int, default=5)
+    parser.add_argument('--emb_dim', type=int, default=600)
+    parser.add_argument('--train_subset', default=False, action='store_true')
+
+    parser.add_argument('--log_dir', type=str, default="log")
+    parser.add_argument('--checkpoint_dir', type=str, default='ckpt')
+    parser.add_argument('--save_test_dir', type=str, default='saved')
     print("Start preparing for parameters...")
     args = parser.parse_args()
-    args.local_rank = int(os.environ['LOCAL_RANK'])
     print(args)
 
-    ngpus_per_node = args.ngpus_per_node
+    world_size = torch.cuda.device_count()
 
-    mp.spawn(main, args=(ngpus_per_node, args), nprocs=ngpus_per_node, join=True)
+    mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)
