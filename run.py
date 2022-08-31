@@ -10,7 +10,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '4,5'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
 import torch
 import torch.optim as optim
 import torch.distributed as dist
@@ -32,11 +32,10 @@ from utils.compose import *
 
 reg_criterion = torch.nn.L1Loss()
 
-print(torch.cuda.device_count())
 
 def dist_setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12345'
+    os.environ['MASTER_PORT'] = '12347'
     dist.init_process_group(backend='nccl', world_size=world_size, rank=rank)
 
 
@@ -101,7 +100,7 @@ def main(rank, world_size, args):
     # rank = args.rank
 
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '10086'
+    os.environ['MASTER_PORT'] = '10089'
 
     dist.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
     # print('rank', args.rank, ' use multi-gpus...')
@@ -243,13 +242,13 @@ if __name__ == '__main__':
 
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--batch_size', type=int, default=768)
+    parser.add_argument('--batch_size', type=int, default=2048)
     parser.add_argument('--gnn', type=str, default='GTransformer')
-    parser.add_argument('--drop_ratio', type=float, default=0.1)
+    parser.add_argument('--drop_ratio', type=float, default=0)
     parser.add_argument('--heads', type=int, default=10)
     parser.add_argument('--graph_pooling', type=str, default='sum')
     parser.add_argument('--num_message_passing', type=int, default=3)
-    parser.add_argument('--num_layers', type=int, default=5)
+    parser.add_argument('--num_layers', type=int, default=3)
     parser.add_argument('--emb_dim', type=int, default=600)
     parser.add_argument('--train_subset', default=False, action='store_true')
 
