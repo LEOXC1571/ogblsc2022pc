@@ -127,6 +127,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+<<<<<<< HEAD
 
 # dataset
 dataset/pcqm4m-v2/
@@ -139,3 +140,5 @@ log/
 
 # saved
 saved/
+=======
+>>>>>>> origin/master
