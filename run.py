@@ -23,7 +23,7 @@ from torch.utils.data.sampler import RandomSampler
 from torch.utils.data.distributed import DistributedSampler
 
 from ogb.lsc import PCQM4Mv2Evaluator
-from ogb.utils import smiles2graph
+from utils.smiles2graph import smilestograph
 
 from dataset.pcqm4mv2 import PCQM4Mv2Dataset
 from utils.loader import DataLoaderMasking
