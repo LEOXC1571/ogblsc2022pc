@@ -170,6 +170,7 @@ def run(rank, world_size, dataset_root):
 
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     reg_criterion = torch.nn.L1Loss()
+    scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
 
     if rank == 0:
         valid_loader = DataLoaderMasking(dataset[split_idx['valid']], batch_size=args.batch_size,
@@ -183,13 +184,12 @@ def run(rank, world_size, dataset_root):
         if args.checkpoint_dir != '':
             os.makedirs(args.checkpoint_dir, exist_ok=True)
 
-    if args.log_dir != '':
-        writer = SummaryWriter(log_dir=args.log_dir)
+        if args.log_dir != '':
+            writer = SummaryWriter(log_dir=args.log_dir)
 
-    best_valid_mae = 1000
+        best_valid_mae = 1000
 
 
-    scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
 
     for epoch in range(1, args.epochs + 1):
         print("=====Epoch {}".format(epoch))
@@ -199,7 +199,7 @@ def run(rank, world_size, dataset_root):
         # 数据同步
         dist.barrier()
 
-        if rank == 0:  # evaluate on a single GPU
+        if rank == 0:  # evaluate and write log on a single GPU
             print('Evaluating...')
             valid_mae = eval(model, rank, valid_loader, evaluator)
 
@@ -232,11 +232,14 @@ def run(rank, world_size, dataset_root):
                                                 mode='test-challenge')
 
             print(f'Best validation MAE so far: {best_valid_mae}')
+            if args.log_dir != '':
+                writer.close()
 
+        dist.barrier()
         scheduler.step()
 
-    if args.log_dir != '':
-        writer.close()
+    # finish training
+    dist.destroy_process_group()
 
 if __name__ == '__main__':
     dataset_root = 'dataset/'
