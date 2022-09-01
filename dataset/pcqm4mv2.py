@@ -32,17 +32,29 @@ class PCQM4Mv2Dataset(PygPCQM4Mv2Dataset):
                  smiles2graph=smilestograph,
                  transform=None,
                  pre_transform=None):
+<<<<<<< HEAD
+                 
+=======
+>>>>>>> origin/master
         '''
             Pytorch Geometric PCQM4Mv2 dataset object
                 - root (str): the dataset folder will be located at root/pcqm4m_kddcup2021
                 - smiles2graph (callable): A callable function that converts a SMILES string into a graph object
                     * The default smiles2graph requires rdkit to be installed
         '''
+<<<<<<< HEAD
+        super(PCQM4Mv2Dataset, self).__init__(root, smiles2graph, transform, pre_transform)
+        
+        self.smiles2graph = smiles2graph
+        self.transform, self.pre_transform= transform, pre_transform
+        #self.folder = osp.join(root, 'pcqm4m-v2')   # self.folder从PygPCQM4Mv2Dataset中继承，不需要再join
+=======
 
         self.original_root = root
         self.smiles2graph = smiles2graph
         self.transform, self.pre_transform= transform, pre_transform
         self.folder = osp.join(root, 'pcqm4m-v2')
+>>>>>>> origin/master
         self.version = 1
         self.url = 'https://dgl-data.s3-accelerate.amazonaws.com/dataset/OGB-LSC/pcqm4m-v2.zip'
 
@@ -52,7 +64,10 @@ class PCQM4Mv2Dataset(PygPCQM4Mv2Dataset):
             if input('Will you update the dataset now? (y/N)\n').lower() == 'y':
                 shutil.rmtree(self.folder)
 
+<<<<<<< HEAD
+=======
         super(PCQM4Mv2Dataset, self).__init__(self.folder, smiles2graph, transform, pre_transform)
+>>>>>>> origin/master
 
         self.data, self.slices = torch.load(self.processed_paths[0])
 
