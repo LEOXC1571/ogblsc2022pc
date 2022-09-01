@@ -11,6 +11,7 @@ import numpy as np
 from tqdm import tqdm
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
+
 import torch
 import torch.optim as optim
 import torch.distributed as dist
@@ -33,19 +34,12 @@ from utils.compose import *
 reg_criterion = torch.nn.L1Loss()
 
 
-def dist_setup(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12347'
-    dist.init_process_group(backend='nccl', world_size=world_size, rank=rank)
-
-
 def train(model, device, loader, optimizer):
     model.train()
     loss_accum = 0
 
     for step, batch in enumerate(tqdm(loader, desc="Iteration")):
         batch = batch.to(device)
-
         pred = model(batch).view(-1,)
         optimizer.zero_grad()
         loss = reg_criterion(pred, batch.y)
@@ -62,7 +56,6 @@ def eval(model, device, loader, evaluator):
 
     for step, batch in enumerate(tqdm(loader, desc="Iteration")):
         batch = batch.to(device)
-
         with torch.no_grad():
             pred = model(batch).view(-1,)
 
@@ -83,7 +76,6 @@ def test(model, device, loader):
 
     for step, batch in enumerate(tqdm(loader, desc="Iteration")):
         batch = batch.to(device)
-
         with torch.no_grad():
             pred = model(batch).view(-1,)
 
@@ -95,25 +87,13 @@ def test(model, device, loader):
 
 
 def main(rank, world_size, args):
-    # args.gpu = gpu
-    # args.rank = args.rank * ngpus_per_node + gpu
-    # rank = args.rank
-
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '10089'
-
     dist.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
-    # print('rank', args.rank, ' use multi-gpus...')
-
-    # if args.rank % world_size == 0:
     print('Parameters preparation complete! Start loading networks...')
     local_rank = dist.get_rank()
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
-
-    # torch.cuda.set_device(args.gpu)
-    # device = torch.device('cuda', args.gpu)
-    args.batch_size = int(args.batch_size / world_size)
 
     current_path = os.path.dirname(os.path.realpath(__file__))
     np.random.seed(42)
@@ -121,7 +101,6 @@ def main(rank, world_size, args):
     torch.cuda.manual_seed(42)
     random.seed(42)
 
-    # device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
     transform = Compose(
         [
             Self_loop(),
@@ -129,45 +108,19 @@ def main(rank, world_size, args):
             Add_collection_node(num_atom_type=119, bidirection=False)
         ]
     )
-
-    dataset = PCQM4Mv2Dataset(root='../../../../data/xc/molecule_datasets',
-                              smiles2graph=smiles2graph, transform=transform)
-
+    dataset = PCQM4Mv2Dataset(root=args.dataset_root, smiles2graph=smilestograph, transform=transform)
     split_idx = dataset.get_idx_split()
-
     evaluator = PCQM4Mv2Evaluator()
 
-    if args.train_subset:
-        subset_ratio = 0.1
-        subset_idx = torch.randperm(len(split_idx["train"]))[:int(subset_ratio * len(split_idx["train"]))]
-        train_loader = DataLoader(dataset[split_idx["train"][subset_idx]], batch_size=args.batch_size, shuffle=True,
-                                  num_workers=args.num_workers)
-        valid_loader = DataLoader(dataset[split_idx["valid"]], batch_size=args.batch_size, shuffle=False,
-                                  num_workers=args.num_workers)
-    else:
-        train_sampler = DistributedSampler(dataset[split_idx['train']], shuffle=True)
-        valid_sampler = DistributedSampler(dataset[split_idx['valid']], shuffle=False)
-
-        train_loader = DataLoaderMasking(dataset[split_idx['train']], batch_size=args.batch_size, shuffle=False,
-                                         num_workers=args.num_workers, sampler=train_sampler)
-        valid_loader = DataLoaderMasking(dataset[split_idx['valid']], batch_size=args.batch_size, shuffle=False,
-                                         num_workers=args.num_workers, sampler=valid_sampler)
-
-    if args.save_test_dir != '':
-        testdev_loader = DataLoader(dataset[split_idx["test-dev"]], batch_size=args.batch_size, shuffle=False,
-                                    num_workers=args.num_workers)
-        testchallenge_loader = DataLoader(dataset[split_idx["test-challenge"]], batch_size=args.batch_size,
-                                          shuffle=False, num_workers=args.num_workers)
-
-    if args.checkpoint_dir != '':
-        os.makedirs(args.checkpoint_dir, exist_ok=True)
-
+    train_sampler = DistributedSampler(dataset[split_idx['train']], num_replicas=world_size, rank=rank, shuffle=True)
+    train_loader = DataLoaderMasking(dataset[split_idx['train']], batch_size=args.batch_size, shuffle=False,
+                                     num_workers=args.num_workers, sampler=train_sampler)
     if args.gnn == 'GTransformer':
         from model.GTransformer import MolGNet
         num_tasks = 1
         model = MolGNet(args.num_layers, args.emb_dim, args.heads, args.num_message_passing,
                         num_tasks, args.drop_ratio, args.graph_pooling, device)
-        model = DistributedDataParallel(model, device_ids=[args.gpu])
+        model = DistributedDataParallel(model, device_ids=[rank])
     else:
         raise ValueError('Invalid GNN type')
 
@@ -175,74 +128,84 @@ def main(rank, world_size, args):
     print(f'#Params: {num_params}')
 
     optimizer = optim.Adam(model.parameters(), lr=0.001)
+    scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
 
-    if args.log_dir != '':
-        writer = SummaryWriter(log_dir=args.log_dir)
+    if rank == 0:
+        valid_loader = DataLoaderMasking(dataset[split_idx['valid']], batch_size=args.batch_size,
+                                         shuffle=False, num_workers=args.num_workers)
+        if args.save_test_dir != '':
+            testdev_loader = DataLoader(dataset[split_idx["test-dev"]], batch_size=args.batch_size, shuffle=False,
+                                        num_workers=args.num_workers)
+            testchallenge_loader = DataLoader(dataset[split_idx["test-challenge"]], batch_size=args.batch_size,
+                                              shuffle=False, num_workers=args.num_workers)
 
-    best_valid_mae = 1000
+        if args.checkpoint_dir != '':
+            os.makedirs(args.checkpoint_dir, exist_ok=True)
 
-    if args.train_subset:
-        scheduler = StepLR(optimizer, step_size=300, gamma=0.25)
-        args.epochs = 1000
-    else:
-        scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
+        if args.log_dir != '':
+            writer = SummaryWriter(log_dir=args.log_dir)
+
+        best_valid_mae = 1000
 
     for epoch in range(1, args.epochs + 1):
         print("=====Epoch {}".format(epoch))
         print('Training...')
         train_mae = train(model, device, train_loader, optimizer)
 
-        print('Evaluating...')
-        valid_mae = eval(model, device, valid_loader, evaluator)
+        dist.barrier()
 
-        print({'Train': train_mae, 'Validation': valid_mae})
+        if rank == 0:
+            print('Evaluating...')
+            valid_mae = eval(model, device, valid_loader, evaluator)
 
-        if args.log_dir != '':
-            writer.add_scalar('valid/mae', valid_mae, epoch)
-            writer.add_scalar('train/mae', train_mae, epoch)
+            print({'Train': train_mae, 'Validation': valid_mae})
 
-        if valid_mae < best_valid_mae:
-            best_valid_mae = valid_mae
-            if args.checkpoint_dir != '':
-                print('Saving checkpoint...')
-                checkpoint = {'epoch': epoch, 'model_state_dict': model.state_dict(),
-                              'optimizer_state_dict': optimizer.state_dict(),
-                              'scheduler_state_dict': scheduler.state_dict(), 'best_val_mae': best_valid_mae,
-                              'num_params': num_params}
-                torch.save(checkpoint, os.path.join(args.checkpoint_dir, 'checkpoint.pt'))
+            if args.log_dir != '':
+                writer.add_scalar('valid/mae', valid_mae, epoch)
+                writer.add_scalar('train/mae', train_mae, epoch)
 
-            if args.save_test_dir != '':
-                testdev_pred = test(model, device, testdev_loader)
-                testdev_pred = testdev_pred.cpu().detach().numpy()
+            if valid_mae < best_valid_mae:
+                best_valid_mae = valid_mae
+                if args.checkpoint_dir != '':
+                    print('Saving checkpoint...')
+                    checkpoint = {'epoch': epoch, 'model_state_dict': model.state_dict(),
+                                  'optimizer_state_dict': optimizer.state_dict(),
+                                  'scheduler_state_dict': scheduler.state_dict(), 'best_val_mae': best_valid_mae,
+                                  'num_params': num_params}
+                    torch.save(checkpoint, os.path.join(args.checkpoint_dir, 'checkpoint.pt'))
 
-                testchallenge_pred = test(model, device, testchallenge_loader)
-                testchallenge_pred = testchallenge_pred.cpu().detach().numpy()
+                if args.save_test_dir != '':
+                    testdev_pred = test(model, device, testdev_loader)
+                    testdev_pred = testdev_pred.cpu().detach().numpy()
 
-                print('Saving test submission file...')
-                evaluator.save_test_submission({'y_pred': testdev_pred}, args.save_test_dir, mode='test-dev')
-                evaluator.save_test_submission({'y_pred': testchallenge_pred}, args.save_test_dir,
-                                               mode='test-challenge')
+                    testchallenge_pred = test(model, device, testchallenge_loader)
+                    testchallenge_pred = testchallenge_pred.cpu().detach().numpy()
 
+                    print('Saving test submission file...')
+                    evaluator.save_test_submission({'y_pred': testdev_pred}, args.save_test_dir, mode='test-dev')
+                    evaluator.save_test_submission({'y_pred': testchallenge_pred}, args.save_test_dir,
+                                                   mode='test-challenge')
+            print(f'Best validation MAE so far: {best_valid_mae}')
+            if args.log_dir != '':
+                writer.close()
+
+        dist.barrier()
         scheduler.step()
 
-        print(f'Best validation MAE so far: {best_valid_mae}')
-
-    if args.log_dir != '':
-        writer.close()
+    dist.destroy_process_group()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', type=int, default=None)
-    # parser.add_argument('--ngpus_per_node', type=int, default=2)
     parser.add_argument('--rank', type=int, default=4)
     parser.add_argument('--num_workers', type=int, default=4)
-    # parser.add_argument('--gpu_ids', default='0,1,2,3,4,5,6,7')
     parser.add_argument("--local_rank", type=int, default=-1)
+    parser.add_argument('--dataset_root', type=str, default='../../../../data/xc/molecule_datasets')
 
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--batch_size', type=int, default=2048)
+    parser.add_argument('--batch_size', type=int, default=1024)
     parser.add_argument('--gnn', type=str, default='GTransformer')
     parser.add_argument('--drop_ratio', type=float, default=0)
     parser.add_argument('--heads', type=int, default=10)
