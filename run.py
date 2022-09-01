@@ -189,7 +189,6 @@ def main(rank, world_size, args):
             if args.log_dir != '':
                 writer.close()
 
-        dist.barrier()
         scheduler.step()
 
     dist.destroy_process_group()
