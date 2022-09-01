@@ -33,7 +33,6 @@ class PCQM4Mv2Dataset(PygPCQM4Mv2Dataset):
                  transform=None,
                  pre_transform=None):
         super(PCQM4Mv2Dataset, self).__init__(root, smiles2graph, transform, pre_transform)
-        
         self.smiles2graph = smiles2graph
         self.transform, self.pre_transform= transform, pre_transform
         #self.folder = osp.join(root, 'pcqm4m-v2')   # self.folder从PygPCQM4Mv2Dataset中继承，不需要再join
@@ -43,8 +42,7 @@ class PCQM4Mv2Dataset(PygPCQM4Mv2Dataset):
         # check version and update if necessary
         if osp.isdir(self.folder) and (not osp.exists(osp.join(self.folder, f'RELEASE_v{self.version}.txt'))):
             print('PCQM4Mv2 dataset has been updated.')
-            if input('Will you update the dataset now? (y/N)\n').lower() == 'y':
-                shutil.rmtree(self.folder)
+            shutil.rmtree(self.folder)
         self.data, self.slices = torch.load(self.processed_paths[0])
 
     def __getitem__(self, idx):
