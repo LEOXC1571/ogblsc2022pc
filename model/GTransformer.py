@@ -237,14 +237,9 @@ class MolGNet(nn.Module):
 
         self.LSTM = nn.LSTM(input_size=256, hidden_size=self.hidden_size, num_layers=2).to(self.device)
         self.gnns = nn.ModuleList([GTLayer(emb_dim, heads, num_message_passing, drop_ratio) for _ in range(num_layer)]).to(self.device)
-<<<<<<< HEAD
-        self.graph_pred_linear = nn.Linear(self.mult * self.emb_dim, self.num_tasks).to(self.device)
-        self.lstm_pred_linear = nn.Linear(self.hidden_size, self.num_tasks).to(self.device)
-=======
         self.graph_reduce_linear = nn.Linear(self.mult * self.emb_dim, self.hidden_size).to(self.device)
         self.graph_pred_linear = nn.Linear(self.hidden_size, self.num_tasks).to(self.device)
         # self.lstm_pred_linear = nn.Linear(self.hidden_size, self.num_tasks).to(self.device)
->>>>>>> origin/master
 
         if graph_pooling == 'sum':
             self.pool = global_add_pool
@@ -308,10 +303,7 @@ class MolGNet(nn.Module):
         if self.dummy:
             return self.graph_pred_linear(node_representation[dummy_indice])
         else:
-<<<<<<< HEAD
-            return self.graph_pred_linear(self.pool(node_representation, batch)) + self.lstm_pred_linear(unpack)
-=======
             return self.graph_pred_linear(self.graph_reduce_linear(self.pool(node_representation, batch)) + unpack)
             # return self.graph_pred_linear(self.graph_reduce_linear(self.pool(node_representation, batch)) + unpack) + self.lstm_pred_linear(unpack)
->>>>>>> origin/master
+
 
