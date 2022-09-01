@@ -10,7 +10,11 @@ from torch_geometric.nn import global_add_pool, global_mean_pool, global_max_poo
 import torch.nn.functional as F
 from torch_geometric.nn.inits import uniform
 
+<<<<<<< HEAD
+from .conv import GNN_node, GNN_node_Virtualnode
+=======
 from conv import GNN_node, GNN_node_Virtualnode
+>>>>>>> origin/master
 
 from torch_scatter import scatter_mean
 

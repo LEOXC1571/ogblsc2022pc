@@ -306,3 +306,4 @@ class MolGNet(nn.Module):
             return self.graph_pred_linear(self.graph_reduce_linear(self.pool(node_representation, batch)) + unpack)
             # return self.graph_pred_linear(self.graph_reduce_linear(self.pool(node_representation, batch)) + unpack) + self.lstm_pred_linear(unpack)
 
+
