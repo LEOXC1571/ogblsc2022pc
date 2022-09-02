@@ -121,6 +121,12 @@ def main(rank, world_size, args):
         model = MolGNet(args.num_layers, args.emb_dim, args.heads, args.num_message_passing,
                         num_tasks, args.drop_ratio, args.graph_pooling, device)
         model = DistributedDataParallel(model, device_ids=[rank])
+    elif args.gnn == 'GTransformer_graseq':
+        from model.GTransformer_graseq import MolGNet
+        num_tasks = 1
+        model = MolGNet(args.num_layers, args.emb_dim, args.heads, args.num_message_passing,
+                        num_tasks, args.drop_ratio, args.graph_pooling, device)
+        model = DistributedDataParallel(model, device_ids=[rank])
     else:
         raise ValueError('Invalid GNN type')
 
