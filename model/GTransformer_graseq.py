@@ -1,8 +1,8 @@
-# Coding: utf-8
-# Coded By Leo Xu
-# At 2022/7/20 16:11
-# Email: leoxc1571@163.com
-
+# -*- coding: utf-8 -*-
+# @Filename: GTransformer_graseq.py
+# @Date: 2022-09-02 08:48
+# @Author: Leo Xu
+# @Email: leoxc1571@163.com
 import math
 
 import torch
@@ -305,5 +305,3 @@ class MolGNet(nn.Module):
         else:
             return self.graph_pred_linear(torch.concat((self.graph_reduce_linear(self.pool(node_representation, batch)), unpack), dim=1))
             # return self.graph_pred_linear(self.graph_reduce_linear(self.pool(node_representation, batch)) + unpack) + self.lstm_pred_linear(unpack)
-
-
