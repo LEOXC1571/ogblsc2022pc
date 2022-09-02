@@ -211,20 +211,22 @@ class GTLayer(nn.Module):
 
 
 class MolGNet(nn.Module):
-    def __init__(self, num_layer, emb_dim, heads, num_message_passing, num_tasks, drop_ratio=0, graph_pooling='mean', device='cpu'):
+    def __init__(self, num_layer, emb_dim, heads, num_message_passing, num_tasks,
+                 drop_ratio=0, graph_pooling='mean', device='cpu', fusion=True):
         super(MolGNet, self).__init__()
         self.num_layer = num_layer
         self.drop_ratio = drop_ratio
         self.num_tasks = num_tasks
         self.emb_dim = emb_dim
         self.device = device
+        self.fusion = fusion
         self.x_embedding = nn.Embedding(178, emb_dim).to(self.device)
         self.x_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
         self.edge_embedding = nn.Embedding(18, emb_dim).to(self.device)
         self.edge_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
         self.x_embedding = nn.Embedding(178, emb_dim).to(self.device)
         self.x_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
-        self.smile_embedding = nn.Embedding(178, 256).to(self.device)
+        # self.smile_embedding = nn.Embedding(178, 256).to(self.device)
         # self.smile_seg_embedding = nn.Embedding(seg_size, 300).to(self.device)
 
         if self.num_layer < 2:
@@ -235,10 +237,15 @@ class MolGNet(nn.Module):
 
         self.init_params()
 
-        self.LSTM = nn.LSTM(input_size=256, hidden_size=self.hidden_size, bidirectional=True, num_layers=2).to(self.device)
-        self.gnns = nn.ModuleList([GTLayer(emb_dim, heads, num_message_passing, drop_ratio) for _ in range(num_layer)]).to(self.device)
+        self.LSTM = nn.LSTM(input_size=emb_dim, hidden_size=self.hidden_size,
+                            bidirectional=True, num_layers=2).to(self.device)
+        self.gnns = nn.ModuleList([GTLayer(emb_dim, heads, num_message_passing, drop_ratio)
+                                   for _ in range(num_layer)]).to(self.device)
         self.graph_reduce_linear = nn.Linear(self.mult * self.emb_dim, self.hidden_size * 2).to(self.device)
-        self.graph_pred_linear = nn.Linear(self.hidden_size * 4, self.num_tasks).to(self.device)
+        self.graph_pred_linear = nn.Linear(self.hidden_size * 2, self.num_tasks).to(self.device)
+        self.fusion_pred = nn.Sequential(nn.Linear(self.hidden_size * 2, 16),
+                                         nn.ReLU(),
+                                         nn.Linear(16, num_tasks)).to(self.device)
         # self.lstm_pred_linear = nn.Linear(self.hidden_size, self.num_tasks).to(self.device)
 
         if graph_pooling == 'sum':
@@ -262,7 +269,7 @@ class MolGNet(nn.Module):
         nn.init.xavier_uniform_(self.x_seg_embedding.weight.data)
         nn.init.xavier_uniform_(self.edge_embedding.weight.data)
         nn.init.xavier_uniform_(self.edge_seg_embedding.weight.data)
-        nn.init.xavier_uniform_(self.smile_embedding.weight.data)
+        # nn.init.xavier_uniform_(self.smile_embedding.weight.data)
         # nn.init.xavier_uniform_(self.smile_seg_embedding.weight.data)
 
     def split_tensor(self, x: torch.Tensor, batch: torch.Tensor):
@@ -283,25 +290,30 @@ class MolGNet(nn.Module):
         else:
             raise ValueError('Unmatched number of arguments')
 
-        x_seq = x
+        # x_seq = x
         x = self.x_embedding(x).sum(1) + self.x_seg_embedding(node_seg)
-        x_seq = self.smile_embedding(x_seq).sum(1)
+        # x_seq = self.smile_embedding(x_seq).sum(1)
         edge_attr = self.edge_embedding(edge_attr).sum(1) + self.edge_seg_embedding(edge_seg)
-
-        split_x_seq, length = self.split_tensor(x_seq, batch)
-
-        pad_sequence = nn.utils.rnn.pad_sequence(split_x_seq, batch_first=True)
-        packed_sequence = nn.utils.rnn.pack_padded_sequence(pad_sequence, lengths=length, batch_first=True, enforce_sorted=False)
-        lstm, _ = self.LSTM(packed_sequence)
-        unpack, _ = nn.utils.rnn.pad_packed_sequence(lstm, batch_first=True)
-        unpack = torch.sum(unpack, dim=1)
 
         for gnn in self.gnns:
             x = gnn(x, edge_idx, edge_attr)
 
+        split_x, length = self.split_tensor(x, batch)
+        pad_x = nn.utils.rnn.pad_sequence(split_x, batch_first=True)
+        packed_x = nn.utils.rnn.pack_padded_sequence(pad_x, lengths=length, batch_first=True, enforce_sorted=False)
+        lstm, _ = self.LSTM(packed_x)
+        unpack_x, _ = nn.utils.rnn.pad_packed_sequence(lstm, batch_first=True)
+        unpack_x = torch.sum(unpack_x, dim=1)
+
+
+
         node_representation = x
-        if self.dummy:
-            return self.graph_pred_linear(node_representation[dummy_indice])
+        if self.fusion:
+            mol_emb = F.normalize(self.graph_reduce_linear(self.pool(node_representation, batch)), p=2, dim=0) + \
+                      F.normalize(unpack_x, p=2, dim=0)
+            return self.fusion_pred(mol_emb)
         else:
-            return self.graph_pred_linear(torch.concat((self.graph_reduce_linear(self.pool(node_representation, batch)), unpack), dim=1))
-            # return self.graph_pred_linear(self.graph_reduce_linear(self.pool(node_representation, batch)) + unpack) + self.lstm_pred_linear(unpack)
+            if self.dummy:
+                return self.graph_pred_linear(node_representation[dummy_indice])
+            else:
+                return self.graph_pred_linear(torch.concat((self.graph_reduce_linear(self.pool(node_representation, batch)), unpack_x), dim=1))
