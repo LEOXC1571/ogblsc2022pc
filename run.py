@@ -11,14 +11,14 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '4'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
 
 import torch
 import torch.optim as optim
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR
 from torch_geometric.loader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data.sampler import RandomSampler
@@ -134,8 +134,10 @@ def main(rank, world_size, args):
     num_params = sum(p.numel() for p in model.parameters())
     print(f'#Params: {num_params}')
 
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    # scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
+    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs-args.warmup,
+                                  eta_min=0, last_epoch=-1)
 
     if rank == 0:
         valid_loader = DataLoaderMasking(dataset[split_idx['valid']], batch_size=args.batch_size,
@@ -210,7 +212,8 @@ if __name__ == '__main__':
     parser.add_argument('--dataset_root', type=str, default='../../../../data/xc/molecule_datasets')
 
     parser.add_argument('--epochs', type=int, default=100)
-    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--warmup', type=int, default=10)
+    parser.add_argument('--lr', type=float, default=0.005)
     parser.add_argument('--batch_size', type=int, default=1024)
     parser.add_argument('--gnn', type=str, default='GTransformer')
     parser.add_argument('--drop_ratio', type=float, default=0)
