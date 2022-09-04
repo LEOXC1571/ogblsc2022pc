@@ -213,7 +213,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--warmup', type=int, default=10)
-    parser.add_argument('--lr', type=float, default=0.005)
+    parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--batch_size', type=int, default=1024)
     parser.add_argument('--gnn', type=str, default='GTransformer')
     parser.add_argument('--drop_ratio', type=float, default=0)
