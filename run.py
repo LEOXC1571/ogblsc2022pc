@@ -89,7 +89,7 @@ def test(model, device, loader):
 
 def main(rank, world_size, args):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '10400'
+    os.environ['MASTER_PORT'] = '10460'
     dist.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
     print('Parameters preparation complete! Start loading networks...')
     local_rank = dist.get_rank()
@@ -135,9 +135,9 @@ def main(rank, world_size, args):
     print(f'#Params: {num_params}')
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    # scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
-    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs-args.warmup,
-                                  eta_min=0, last_epoch=-1)
+    scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
+    # scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs-args.warmup,
+    #                               eta_min=0, last_epoch=-1)
 
     if rank == 0:
         valid_loader = DataLoaderMasking(dataset[split_idx['valid']], batch_size=args.batch_size,
@@ -213,7 +213,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--warmup', type=int, default=10)
-    parser.add_argument('--lr', type=float, default=0.01)
+    parser.add_argument('--lr', type=float, default=0.005)
     parser.add_argument('--batch_size', type=int, default=1024)
     parser.add_argument('--gnn', type=str, default='GTransformer')
     parser.add_argument('--drop_ratio', type=float, default=0)
