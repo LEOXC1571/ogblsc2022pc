@@ -23,11 +23,11 @@ from torch_geometric.data import Data
 
 # import utils
 # import utils.sdf2graph
-from ..utils import sdf2graph
+from utils import sdf2graph
 
 
 class PCQM4Mv2Dataset_3D(InMemoryDataset):
-    def __init__(self, root='../../../../../data/xc/molecule_datasets',
+    def __init__(self, root='../../../../data/xc/molecule_datasets',
                  sdf2graph=sdf2graph,
                  transform=None,
                  pre_transform=None):
