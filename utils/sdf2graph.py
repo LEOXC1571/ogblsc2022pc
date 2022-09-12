@@ -74,19 +74,20 @@ atom_cumsum = np.cumsum(atom_dic)
 bond_cumsum = np.cumsum(bond_dic)
 
 
+def get_atom_poses(mol, conf):
+    atom_poses = []
+    for i, atom in enumerate(mol.GetAtoms()):
+        if atom.GetAtomicNum() == 0:
+            return [[0.0, 0.0, 0.0]] * len(mol.GetAtoms())
+        pos = conf.GetAtomPosition(i)
+        atom_poses.append([pos.x, pos.y, pos.z])
+    return atom_poses
+
+
 def sdf2graph(rdkit_mol, sdf_mol):
     assert rdkit_mol is not None
     atom_features_list = []
-    if sdf_mol is not None:
-        position = sdf_mol.GetConformer().GetPositions()
-        mol = sdf_mol
-    else:
-        temp_mol = Chem.AddHs(rdkit_mol)
-        AllChem.EmbedMolecule(temp_mol)
-        AllChem.MMFFOptimizeMolecule(temp_mol)
-        rdkit_mol = Chem.RemoveHs(temp_mol)
-        position = rdkit_mol.GetConformer().GetPositions()
-        mol = rdkit_mol
+    mol = sdf_mol if sdf_mol is not None else rdkit_mol
 
     for atom in mol.GetAtoms():
         atom_feature = \
@@ -126,6 +127,20 @@ def sdf2graph(rdkit_mol, sdf_mol):
         # print('mol has no bonds')
         edge_index = torch.empty((2, 0), dtype=torch.long)
         edge_attr = torch.empty((0, num_bond_features), dtype=torch.long)
+
+    if sdf_mol is not None:
+        position = sdf_mol.GetConformer().GetPositions()
+    else:
+        try:
+            temp_mol = Chem.AddHs(rdkit_mol)
+            # AllChem.EmbedMultipleConfs(temp_mol, numConfs=40)
+            AllChem.EmbedMolecule(temp_mol, useRandomCoords=True)
+            AllChem.MMFFOptimizeMolecule(temp_mol)
+            rdkit_mol = Chem.RemoveHs(temp_mol)
+            position = rdkit_mol.GetConformer().GetPositions()
+        except:
+            AllChem.Compute2DCoords(rdkit_mol)
+            position = rdkit_mol.GetConformer().GetPositions()
 
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, pos=position)
 
