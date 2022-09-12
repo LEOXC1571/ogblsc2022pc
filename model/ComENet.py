@@ -25,6 +25,7 @@ import torch.nn.functional as F
 
 import math
 from math import sqrt
+import numpy as np
 
 
 class Linear(nn.Module):
@@ -103,6 +104,7 @@ class TwoLayerLinear(torch.nn.Module):
         self.lin2.reset_parameters()
 
     def forward(self, x):
+        x = x.to(torch.float32)
         x = self.lin1(x)
         if self.act:
             x = swish(x)
@@ -162,31 +164,40 @@ class InterBock(nn.Module):
         self.final.reset_parameters()
 
     def forward(self, x, feature1, feature2, edge_index, batch):
-        x = self.act(self.lin(x))
+        x = self.act(self.linear(x))
+        # print('init', torch.cuda.memory_allocated())
 
-        feature1 = self.lin_feature1(feature1)
+        feature1 = self.lin_feat1(feature1)
+        # print('lin_feat1', torch.cuda.memory_allocated())
         h1 = self.conv1(x, edge_index, feature1)
-        h1 = self.lin1(h1)
+        # print('conv1', torch.cuda.memory_allocated())
+        h1 = self.linear1(h1)
+        # print('linear1', torch.cuda.memory_allocated())
         h1 = self.act(h1)
 
-        feature2 = self.lin_feature2(feature2)
+        feature2 = self.lin_feat2(feature2)
+        # print('lin_feat2', torch.cuda.memory_allocated())
         h2 = self.conv2(x, edge_index, feature2)
-        h2 = self.lin2(h2)
+        # print('conv2', torch.cuda.memory_allocated())
+        h2 = self.linear2(h2)
+        # print('linear2', torch.cuda.memory_allocated())
         h2 = self.act(h2)
 
-        h = self.lin_cat(torch.cat([h1, h2], 1))
+        h = self.linear_cat(torch.cat([h1, h2], 1))
+        # print('linear_cat', torch.cuda.memory_allocated())
 
         h = h + x
-        for lin in self.lins:
+        for lin in self.linears:
             h = self.act(lin(h)) + h
         h = self.norm(h, batch)
+        # print('norm', torch.cuda.memory_allocated())
         h = self.final(h)
+        # print('final', torch.cuda.memory_allocated())
         return h
 
 
 class ComENet(nn.Module):
     def __init__(self,
-                 device,
                  cutoff=8.0,
                  num_layers=4,
                  hidden_channels=256,
@@ -234,26 +245,32 @@ class ComENet(nn.Module):
         self.out.reset_parameters()
 
     def forward(self, *argv):
+        # print('data loading', torch.cuda.memory_allocated())
         data = argv[0]
         batch = data.batch
         x = data.x
         num_nodes = x.size(0)
-        pos = data.pos
+        pos = np.vstack(data.pos)
+        pos = torch.tensor(pos, device=x.device)
         edge_idx = data.edge_index
         i, j = edge_idx[0], edge_idx[1]
 
         vecs = pos[j] - pos[i]
         dist = vecs.norm(dim=-1)
 
-        x = self.act(self.x_emb(x))
+        x = self.act(self.x_emb(x).sum(1))
+        # print('emb',torch.cuda.memory_allocated())
 
         dist, theta, phi, tau = dist_calc(self.cutoff, vecs, dist, i, j, num_nodes)
+        # print('dist_calc', torch.cuda.memory_allocated())
 
         feat1 = self.feat1(dist, theta, phi)
         feat2 = self.feat2(dist, tau)
+        # print('feat', torch.cuda.memory_allocated())
 
         for inter in self.inter_block:
-            x  = inter(x, feat1, feat2, edge_idx, batch)
+            x = inter(x, feat1, feat2, edge_idx, batch)
+            # print('inter', torch.cuda.memory_allocated())
 
         for lin in self.linear:
             x = self.act(lin(x))

@@ -128,6 +128,7 @@ class EmbeddingBlock(torch.nn.Module):
 
 class EdgeGraphConv(GraphConv):
 
+
     def message(self, x_j, edge_weight) -> Tensor:
         return x_j if edge_weight is None else edge_weight * x_j
 

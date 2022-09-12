@@ -11,7 +11,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '4'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
 
 import torch
 import torch.optim as optim
@@ -96,7 +96,7 @@ def main(rank, world_size, args):
     # print('Parameters preparation complete! Start loading networks...')
     local_rank = dist.get_rank()
     torch.cuda.set_device(local_rank)
-    device = torch.device("cuda:5")
+    device = torch.device("cuda", local_rank)
 
     current_path = os.path.dirname(os.path.realpath(__file__))
     np.random.seed(42)
@@ -118,7 +118,7 @@ def main(rank, world_size, args):
     train_loader = DataLoader(dataset[split_idx['train']], batch_size=args.batch_size, shuffle=False,
                               num_workers=args.num_workers, sampler=train_sampler)
     if args.gnn == 'ComENet':
-        from model.comenet import ComENet
+        from model import ComENet
         from model.run import run
         num_tasks = 1
         model = ComENet(cutoff=8.0,
@@ -134,7 +134,7 @@ def main(rank, world_size, args):
         raise ValueError('Invalid MODEL type')
 
     num_params = sum(p.numel() for p in model.parameters())
-    print(f'#Params: {num_params}')
+    print(f'#Params: {num_params}', f'#GPU Memory Used: {torch.cuda.memory_allocated()}')
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
@@ -214,7 +214,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--warmup', type=int, default=10)
     parser.add_argument('--lr', type=float, default=0.005)
-    parser.add_argument('--batch_size', type=int, default=1024)
+    parser.add_argument('--batch_size', type=int, default=10240)
     parser.add_argument('--gnn', type=str, default='ComENet')
     parser.add_argument('--drop_ratio', type=float, default=0)
     parser.add_argument('--heads', type=int, default=10)

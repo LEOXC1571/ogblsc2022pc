@@ -23,7 +23,7 @@ from torch_geometric.data import Data
 
 # import utils
 # import utils.sdf2graph
-from ..utils import sdf2graph
+from utils import sdf2graph
 
 
 class PCQM4Mv2Dataset_3D(InMemoryDataset):
