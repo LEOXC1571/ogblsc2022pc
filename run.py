@@ -62,8 +62,8 @@ def eval(model, device, loader, evaluator):
         y_true.append(batch.y.view(pred.shape).detach().cpu())
         y_pred.append(pred.detach().cpu())
 
-    y_true = torch.cat(y_true, dim = 0)
-    y_pred = torch.cat(y_pred, dim = 0)
+    y_true = torch.cat(y_true, dim=0)
+    y_pred = torch.cat(y_pred, dim=0)
 
     input_dict = {"y_true": y_true, "y_pred": y_pred}
 
@@ -88,7 +88,7 @@ def test(model, device, loader):
 
 def main(rank, world_size, args):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '10089'
+    os.environ['MASTER_PORT'] = '10459'
     dist.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
     print('Parameters preparation complete! Start loading networks...')
     local_rank = dist.get_rank()
@@ -121,6 +121,12 @@ def main(rank, world_size, args):
         model = MolGNet(args.num_layers, args.emb_dim, args.heads, args.num_message_passing,
                         num_tasks, args.drop_ratio, args.graph_pooling, device)
         model = DistributedDataParallel(model, device_ids=[rank])
+    elif args.gnn == 'GTransformer_graseq':
+        from model.GTransformer_graseq import MolGNet
+        num_tasks = 1
+        model = MolGNet(args.num_layers, args.emb_dim, args.heads, args.num_message_passing,
+                        num_tasks, args.drop_ratio, args.graph_pooling, device)
+        model = DistributedDataParallel(model, device_ids=[rank], find_unused_parameters=True)
     else:
         raise ValueError('Invalid GNN type')
 
@@ -189,7 +195,6 @@ def main(rank, world_size, args):
             if args.log_dir != '':
                 writer.close()
 
-        dist.barrier()
         scheduler.step()
 
     dist.destroy_process_group()
