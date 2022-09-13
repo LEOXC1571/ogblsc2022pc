@@ -11,7 +11,7 @@ import shutil
 
 from rdkit.Chem import AllChem
 
-# from ogb.utils import smiles2graph
+from ogb.utils import smiles2graph
 from ogb.utils.torch_util import replace_numpy_with_torchtensor
 from ogb.utils.url import decide_download, download_url, extract_zip
 from ogb.lsc import PygPCQM4Mv2Dataset
@@ -28,17 +28,16 @@ from utils.smiles2graph import smilestograph
 
 
 class PCQM4Mv2Dataset(PygPCQM4Mv2Dataset):
-    def __init__(self, root='dataset',
+    def __init__(self, root='../../../../../data/xc/molecule_datasets',
                  smiles2graph=smilestograph,
                  transform=None,
                  pre_transform=None):
         super(PCQM4Mv2Dataset, self).__init__(root, smiles2graph, transform, pre_transform)
         self.smiles2graph = smiles2graph
-        self.transform, self.pre_transform= transform, pre_transform
-        #self.folder = osp.join(root, 'pcqm4m-v2')   # self.folder从PygPCQM4Mv2Dataset中继承，不需要再join
+        self.transform, self.pre_transform = transform, pre_transform
+        # self.folder = osp.join(root, 'pcqm4m-v2')   # self.folder从PygPCQM4Mv2Dataset中继承，不需要再join
         self.version = 1
         self.url = 'https://dgl-data.s3-accelerate.amazonaws.com/dataset/OGB-LSC/pcqm4m-v2.zip'
-
         # check version and update if necessary
         if osp.isdir(self.folder) and (not osp.exists(osp.join(self.folder, f'RELEASE_v{self.version}.txt'))):
             print('PCQM4Mv2 dataset has been updated.')
@@ -129,7 +128,8 @@ class PCQM4Mv2Dataset(PygPCQM4Mv2Dataset):
 
 
 if __name__ == '__main__':
-    dataset = PygPCQM4Mv2Dataset()
+    dataset = PCQM4Mv2Dataset()
+    print(dataset[707], dataset[708])
     print(dataset)
     print(dataset.data.edge_index)
     print(dataset.data.edge_index.shape)

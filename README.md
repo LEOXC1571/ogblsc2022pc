@@ -13,6 +13,15 @@ Best validation MAE so far: 0.12899625301361084
 ## Distributed Parallel
 You should add the following code in .bashrc, to keep Pytroch multiGPU works.
 
+## New Model
+### Dataset pipeline: 
+- Train Set (3D Geometry original + RDKIT extracted, 2D Graph, Node & Edge Attr.)
+- Valid/Test Set (3D Geometry extracted by RDKIT, 2D Graph, Node & Edge Attr.)
+- Train Split
+### Model pipeline:
+- Geometry learning (Random Sampling from train set)
+- ComENet Based + Edge Attr. + Attention mechanism 
+
 ``` shell
 export NCCL_SHM_DISABLE=1
 ```

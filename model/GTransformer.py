@@ -211,20 +211,22 @@ class GTLayer(nn.Module):
 
 
 class MolGNet(nn.Module):
-    def __init__(self, num_layer, emb_dim, heads, num_message_passing, num_tasks, drop_ratio=0, graph_pooling='mean', device='cpu'):
+    def __init__(self, num_layer, emb_dim, heads, num_message_passing, num_tasks,
+                 drop_ratio=0, graph_pooling='mean', device='cpu',
+                 num_atom_feat=178, num_bond_feat=18):
         super(MolGNet, self).__init__()
         self.num_layer = num_layer
         self.drop_ratio = drop_ratio
         self.num_tasks = num_tasks
         self.emb_dim = emb_dim
         self.device = device
-        self.x_embedding = nn.Embedding(178, emb_dim).to(self.device)
+        self.x_embedding = nn.Embedding(num_atom_feat, emb_dim).to(self.device)
         self.x_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
-        self.edge_embedding = nn.Embedding(18, emb_dim).to(self.device)
+        self.edge_embedding = nn.Embedding(num_bond_feat, emb_dim).to(self.device)
         self.edge_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
-        self.x_embedding = nn.Embedding(178, emb_dim).to(self.device)
+        self.x_embedding = nn.Embedding(num_atom_feat, emb_dim).to(self.device)
         self.x_seg_embedding = nn.Embedding(seg_size, emb_dim).to(self.device)
-        self.smile_embedding = nn.Embedding(178, 256).to(self.device)
+        self.smile_embedding = nn.Embedding(num_atom_feat, 256).to(self.device)
         # self.smile_seg_embedding = nn.Embedding(seg_size, 300).to(self.device)
 
         if self.num_layer < 2:

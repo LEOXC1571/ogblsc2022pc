@@ -26,8 +26,10 @@ from torch.utils.data.distributed import DistributedSampler
 
 from ogb.lsc import PCQM4Mv2Evaluator
 from utils.smiles2graph import smilestograph
+from utils.sdf2graph import sdf2graph
 
 from dataset.pcqm4mv2 import PCQM4Mv2Dataset
+from dataset.pcqm4mv2_3d import PCQM4Mv2Dataset_3D
 from utils.loader import DataLoaderMasking
 from utils.compose import *
 
@@ -89,9 +91,9 @@ def test(model, device, loader):
 
 def main(rank, world_size, args):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '10460'
+    os.environ['MASTER_PORT'] = '14462'
     dist.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
-    print('Parameters preparation complete! Start loading networks...')
+    # print('Parameters preparation complete! Start loading networks...')
     local_rank = dist.get_rank()
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
@@ -102,42 +104,40 @@ def main(rank, world_size, args):
     torch.cuda.manual_seed(42)
     random.seed(42)
 
-    transform = Compose(
-        [
-            Self_loop(),
-            Add_seg_id(),
-            Add_collection_node(num_atom_type=119, bidirection=False)
-        ]
-    )
-    dataset = PCQM4Mv2Dataset(root=args.dataset_root, smiles2graph=smilestograph, transform=transform)
+    # dataset = PCQM4Mv2Dataset(root=args.dataset_root, smiles2graph=smilestograph, transform=transform)
+    dataset = PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
     split_idx = dataset.get_idx_split()
     evaluator = PCQM4Mv2Evaluator()
+    # split_idx = dataset.get_idx_split()['train']
+    # test_idx = int(len(dataset) * 0.8)
+    # train_dataset = dataset[: test_idx]
+    # valid_dataset = dataset[test_idx:]
+    # test_dataset = dataset[test_idx:]
 
     train_sampler = DistributedSampler(dataset[split_idx['train']], num_replicas=world_size, rank=rank, shuffle=True)
-    train_loader = DataLoaderMasking(dataset[split_idx['train']], batch_size=args.batch_size, shuffle=False,
-                                     num_workers=args.num_workers, sampler=train_sampler)
-    if args.gnn == 'GTransformer':
-        from model.GTransformer import MolGNet
+    train_loader = DataLoader(dataset[split_idx['train']], batch_size=args.batch_size, shuffle=False,
+                              num_workers=args.num_workers, sampler=train_sampler)
+    if args.gnn == 'ComENet':
+        from model import ComENet
+        from model.run import run
         num_tasks = 1
-        model = MolGNet(args.num_layers, args.emb_dim, args.heads, args.num_message_passing,
-                        num_tasks, args.drop_ratio, args.graph_pooling, device)
+        model = ComENet(cutoff=8.0,
+                        num_layers=4,
+                        hidden_channels=256,
+                        middle_channels=64,
+                        out_channels=1,
+                        num_radial=3,
+                        num_spherical=2,
+                        num_output_layers=3).to(device)
         model = DistributedDataParallel(model, device_ids=[rank])
-    elif args.gnn == 'GTransformer_graseq':
-        from model.GTransformer_graseq import MolGNet
-        num_tasks = 1
-        model = MolGNet(args.num_layers, args.emb_dim, args.heads, args.num_message_passing,
-                        num_tasks, args.drop_ratio, args.graph_pooling, device)
-        model = DistributedDataParallel(model, device_ids=[rank], find_unused_parameters=True)
     else:
-        raise ValueError('Invalid GNN type')
+        raise ValueError('Invalid MODEL type')
 
     num_params = sum(p.numel() for p in model.parameters())
-    print(f'#Params: {num_params}')
+    print(f'#Params: {num_params}', f'#GPU Memory Used: {torch.cuda.memory_allocated()}')
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
-    # scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs-args.warmup,
-    #                               eta_min=0, last_epoch=-1)
 
     if rank == 0:
         valid_loader = DataLoaderMasking(dataset[split_idx['valid']], batch_size=args.batch_size,
@@ -156,11 +156,11 @@ def main(rank, world_size, args):
 
         best_valid_mae = 1000
 
+    #
     for epoch in range(1, args.epochs + 1):
         print("=====Epoch {}".format(epoch))
         print('Training...')
         train_mae = train(model, device, train_loader, optimizer)
-
         dist.barrier()
 
         if rank == 0:
@@ -214,8 +214,8 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--warmup', type=int, default=10)
     parser.add_argument('--lr', type=float, default=0.005)
-    parser.add_argument('--batch_size', type=int, default=1024)
-    parser.add_argument('--gnn', type=str, default='GTransformer')
+    parser.add_argument('--batch_size', type=int, default=10240)
+    parser.add_argument('--gnn', type=str, default='ComENet')
     parser.add_argument('--drop_ratio', type=float, default=0)
     parser.add_argument('--heads', type=int, default=10)
     parser.add_argument('--graph_pooling', type=str, default='sum')
