@@ -6,6 +6,7 @@
 
 
 import os
+from pyexpat import model
 import random
 import argparse
 import numpy as np
@@ -88,11 +89,28 @@ def test(model, device, loader):
 
     return y_pred
 
+def import_model(args):
+    if args.gnn == 'ComENet':
+        from model import ComENet
+        from model.run import run
+        num_tasks = 1
+        model = ComENet(cutoff=8.0,
+                        num_layers=4,
+                        hidden_channels=256,
+                        middle_channels=64,
+                        out_channels=1,
+                        num_radial=3,
+                        num_spherical=2,
+                        num_output_layers=3)
+    else:
+        raise ValueError('Invalid MODEL type')
+    return model
 
 def main(rank, world_size, args):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '14462'
-    dist.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
+    os.environ['NCCL_SHM_DISABLE'] = '1'
+    # os.environ['MASTER_ADDR'] = 'localhost'
+    # os.environ['MASTER_PORT'] = '14462'
+    dist.init_process_group(backend='nccl', init_method='tcp://127.0.0.1:28765', world_size=world_size, rank=rank)
     # print('Parameters preparation complete! Start loading networks...')
     local_rank = dist.get_rank()
     torch.cuda.set_device(local_rank)
@@ -117,36 +135,17 @@ def main(rank, world_size, args):
     train_sampler = DistributedSampler(dataset[split_idx['train']], num_replicas=world_size, rank=rank, shuffle=True)
     train_loader = DataLoader(dataset[split_idx['train']], batch_size=args.batch_size, shuffle=False,
                               num_workers=args.num_workers, sampler=train_sampler)
-    if args.gnn == 'ComENet':
-        from model import ComENet
-        from model.run import run
-        num_tasks = 1
-        model = ComENet(cutoff=8.0,
-                        num_layers=4,
-                        hidden_channels=256,
-                        middle_channels=64,
-                        out_channels=1,
-                        num_radial=3,
-                        num_spherical=2,
-                        num_output_layers=3).to(device)
-        model = DistributedDataParallel(model, device_ids=[rank])
-    else:
-        raise ValueError('Invalid MODEL type')
 
-    num_params = sum(p.numel() for p in model.parameters())
-    print(f'#Params: {num_params}', f'#GPU Memory Used: {torch.cuda.memory_allocated()}')
+    model = import_model(args)
+    model.to(device)
+    model = DistributedDataParallel(model, device_ids=[rank])
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
 
     if rank == 0:
-        valid_loader = DataLoaderMasking(dataset[split_idx['valid']], batch_size=args.batch_size,
+        valid_loader = DataLoader(dataset[split_idx['valid']], batch_size=args.batch_size,
                                          shuffle=False, num_workers=args.num_workers)
-        if args.save_test_dir != '':
-            testdev_loader = DataLoader(dataset[split_idx["test-dev"]], batch_size=args.batch_size, shuffle=False,
-                                        num_workers=args.num_workers)
-            testchallenge_loader = DataLoader(dataset[split_idx["test-challenge"]], batch_size=args.batch_size,
-                                              shuffle=False, num_workers=args.num_workers)
 
         if args.checkpoint_dir != '':
             os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -155,6 +154,12 @@ def main(rank, world_size, args):
             writer = SummaryWriter(log_dir=args.log_dir)
 
         best_valid_mae = 1000
+
+        print(f"Number of training samples: {len(dataset[split_idx['train']])}, Number of validation samples: {len(dataset[split_idx['valid']])}")
+        print(f"Number of test-dev samples: {len(dataset[split_idx['test-dev']])}, Number of test-challenge samples: {len(pyg_dataset[split_idx['test-challenge']])}")
+
+        num_params = sum(p.numel() for p in model.parameters())
+        print(f'#Params: {num_params}', f'#GPU Memory Used: {torch.cuda.memory_allocated()}')
 
     #
     for epoch in range(1, args.epochs + 1):
@@ -183,22 +188,34 @@ def main(rank, world_size, args):
                                   'num_params': num_params}
                     torch.save(checkpoint, os.path.join(args.checkpoint_dir, 'checkpoint.pt'))
 
-                if args.save_test_dir != '':
-                    testdev_pred = test(model, device, testdev_loader)
-                    testdev_pred = testdev_pred.cpu().detach().numpy()
-
-                    testchallenge_pred = test(model, device, testchallenge_loader)
-                    testchallenge_pred = testchallenge_pred.cpu().detach().numpy()
-
-                    print('Saving test submission file...')
-                    evaluator.save_test_submission({'y_pred': testdev_pred}, args.save_test_dir, mode='test-dev')
-                    evaluator.save_test_submission({'y_pred': testchallenge_pred}, args.save_test_dir,
-                                                   mode='test-challenge')
             print(f'Best validation MAE so far: {best_valid_mae}')
-            if args.log_dir != '':
-                writer.close()
 
         scheduler.step()
+
+    # save submission file use best model in main process
+    if rank == 0:
+        # close log file
+        if args.log_dir != '':
+            writer.close()
+        if args.save_test_dir != '' and args.checkpoint_dir != '':
+            testdev_loader = DataLoader(dataset[split_idx["test-dev"]], batch_size=args.batch_size, shuffle=False)
+            testchallenge_loader = DataLoader(dataset[split_idx["test-challenge"]], batch_size=args.batch_size,
+                                        shuffle=False)
+            best_model = import_model(args)
+            best_model.to(device)
+            best_model_ckpt = torch.load(os.path.join(args.checkpoint_dir, 'checkpoint.pt'))
+            print(f"best val mae: {best_model_ckpt['best_val_mae']:.4f}")
+            best_model.load_state_dict(best_model_ckpt['model_state_dict'])
+            testdev_pred = test(best_model, device, testdev_loader)
+            testdev_pred = testdev_pred.cpu().detach().numpy()
+
+            testchallenge_pred = test(best_model, device, testchallenge_loader)
+            testchallenge_pred = testchallenge_pred.cpu().detach().numpy()
+
+            print('Saving test submission file...')
+            evaluator.save_test_submission({'y_pred': testdev_pred}, args.save_test_dir, mode='test-dev')
+            evaluator.save_test_submission({'y_pred': testchallenge_pred}, args.save_test_dir,
+                                        mode='test-challenge')
 
     dist.destroy_process_group()
 
@@ -213,8 +230,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--warmup', type=int, default=10)
-    parser.add_argument('--lr', type=float, default=0.005)
-    parser.add_argument('--batch_size', type=int, default=10240)
+    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--gnn', type=str, default='ComENet')
     parser.add_argument('--drop_ratio', type=float, default=0)
     parser.add_argument('--heads', type=int, default=10)
@@ -231,6 +248,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
     print(args)
 
+    os.environ['NCCL_SHM_DISABLE'] = '1'
+    PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
     world_size = torch.cuda.device_count()
 
     mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)
