@@ -14,7 +14,7 @@ def dist_calc(cutoff, vecs, dist, i, j, num_nodes):
     _, argmin0 = scatter_min(dist, i, dim_size=num_nodes)
     argmin0[argmin0 >= len(i)] = 0
     n0 = j[argmin0]
-    add = torch.zeros_like(dist).to(dist.device)
+    add = torch.zeros_like(dist)
     add[argmin0] = cutoff
     dist1 = dist + add
 
@@ -27,7 +27,7 @@ def dist_calc(cutoff, vecs, dist, i, j, num_nodes):
     argmin0_j[argmin0_j >= len(j)] = 0
     n0_j = i[argmin0_j]
 
-    add_j = torch.zeros_like(dist).to(dist.device)
+    add_j = torch.zeros_like(dist)
     add_j[argmin0_j] = cutoff
     dist1_j = dist + add_j
 
@@ -52,13 +52,13 @@ def dist_calc(cutoff, vecs, dist, i, j, num_nodes):
     # so if n0 = j, we choose iref = n1
     # if n0_j = i, we choose jref = n1_j
     mask_iref = n0 == j
-    iref = torch.clone(n0)
+    iref = n0.clone().detach()
     iref[mask_iref] = n1[mask_iref]
     idx_iref = argmin0[i]
     idx_iref[mask_iref] = argmin1[i][mask_iref]
 
     mask_jref = n0_j == i
-    jref = torch.clone(n0_j)
+    jref = n0_j.clone().detach()
     jref[mask_jref] = n1_j[mask_jref]
     idx_jref = argmin0_j[j]
     idx_jref[mask_jref] = argmin1_j[j][mask_jref]

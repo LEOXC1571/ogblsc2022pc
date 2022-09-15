@@ -104,7 +104,7 @@ class TwoLayerLinear(torch.nn.Module):
         self.lin2.reset_parameters()
 
     def forward(self, x):
-        x = x.to(torch.float32)
+        # x = x.to(torch.float32)
         x = self.lin1(x)
         if self.act:
             x = swish(x)

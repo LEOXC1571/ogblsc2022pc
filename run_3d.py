@@ -12,7 +12,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
 
 import torch
 import torch.optim as optim
@@ -35,10 +35,9 @@ from utils.loader import DataLoaderMasking
 from utils.compose import *
 
 
-reg_criterion = torch.nn.L1Loss()
 
 
-def train(model, device, loader, optimizer):
+def train(model, device, loader, criterion, optimizer):
     model.train()
     loss_accum = 0
 
@@ -46,7 +45,7 @@ def train(model, device, loader, optimizer):
         batch = batch.to(device)
         pred = model(batch).view(-1,)
         optimizer.zero_grad()
-        loss = reg_criterion(pred, batch.y)
+        loss = criterion(pred, batch.y)
         loss.backward()
         optimizer.step()
         loss_accum += loss.detach().cpu().item()
@@ -107,7 +106,6 @@ def import_model(args):
     return model
 
 def main(rank, world_size, args):
-    os.environ['NCCL_SHM_DISABLE'] = '1'
     # os.environ['MASTER_ADDR'] = 'localhost'
     # os.environ['MASTER_PORT'] = '14462'
     dist.init_process_group(backend='nccl', init_method='tcp://127.0.0.1:28765', world_size=world_size, rank=rank)
@@ -125,7 +123,7 @@ def main(rank, world_size, args):
     # dataset = PCQM4Mv2Dataset(root=args.dataset_root, smiles2graph=smilestograph, transform=transform)
     dataset = PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
     split_idx = dataset.get_idx_split()
-    evaluator = PCQM4Mv2Evaluator()
+    
     # split_idx = dataset.get_idx_split()['train']
     # test_idx = int(len(dataset) * 0.8)
     # train_dataset = dataset[: test_idx]
@@ -140,10 +138,12 @@ def main(rank, world_size, args):
     model.to(device)
     model = DistributedDataParallel(model, device_ids=[rank])
 
+    criterion = torch.nn.L1Loss().to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
 
     if rank == 0:
+        evaluator = PCQM4Mv2Evaluator()
         valid_loader = DataLoader(dataset[split_idx['valid']], batch_size=args.batch_size,
                                          shuffle=False, num_workers=args.num_workers)
 
@@ -156,23 +156,26 @@ def main(rank, world_size, args):
         best_valid_mae = 1000
 
         print(f"Number of training samples: {len(dataset[split_idx['train']])}, Number of validation samples: {len(dataset[split_idx['valid']])}")
-        print(f"Number of test-dev samples: {len(dataset[split_idx['test-dev']])}, Number of test-challenge samples: {len(pyg_dataset[split_idx['test-challenge']])}")
+        print(f"Number of test-dev samples: {len(dataset[split_idx['test-dev']])}, Number of test-challenge samples: {len(dataset[split_idx['test-challenge']])}")
 
         num_params = sum(p.numel() for p in model.parameters())
         print(f'#Params: {num_params}', f'#GPU Memory Used: {torch.cuda.memory_allocated()}')
 
-    #
+    dist.barrier()
+    
     for epoch in range(1, args.epochs + 1):
+        train_loader.sampler.set_epoch(epoch)
         print("=====Epoch {}".format(epoch))
         print('Training...')
-        train_mae = train(model, device, train_loader, optimizer)
+        train_mae = train(model, device, train_loader, criterion, optimizer)
         dist.barrier()
 
         if rank == 0:
             print('Evaluating...')
             valid_mae = eval(model, device, valid_loader, evaluator)
 
-            print({'Train': train_mae, 'Validation': valid_mae})
+            print(f'Epoch: {epoch:03d}, Train: {train_mae:.4f}, \
+            Validation: {valid_mae:.4f}')
 
             if args.log_dir != '':
                 writer.add_scalar('valid/mae', valid_mae, epoch)
@@ -188,7 +191,7 @@ def main(rank, world_size, args):
                                   'num_params': num_params}
                     torch.save(checkpoint, os.path.join(args.checkpoint_dir, 'checkpoint.pt'))
 
-            print(f'Best validation MAE so far: {best_valid_mae}')
+            print(f'Best validation MAE so far: {best_valid_mae:.4f}')
 
         scheduler.step()
 
