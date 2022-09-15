@@ -142,6 +142,7 @@ def sdf2graph(rdkit_mol, sdf_mol):
             AllChem.Compute2DCoords(rdkit_mol)
             position = rdkit_mol.GetConformer().GetPositions()
 
+    position = torch.tensor(position, dtype=torch.float)
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, pos=position)
 
     return data

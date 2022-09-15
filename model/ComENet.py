@@ -104,7 +104,7 @@ class TwoLayerLinear(torch.nn.Module):
         self.lin2.reset_parameters()
 
     def forward(self, x):
-        x = x.to(torch.float32)
+        # x = x.to(torch.float32)
         x = self.lin1(x)
         if self.act:
             x = swish(x)
@@ -250,8 +250,7 @@ class ComENet(nn.Module):
         batch = data.batch
         x = data.x
         num_nodes = x.size(0)
-        pos = np.vstack(data.pos)
-        pos = torch.tensor(pos, device=x.device)
+        pos = data.pos
         edge_idx = data.edge_index
         i, j = edge_idx[0], edge_idx[1]
 

@@ -25,15 +25,15 @@ from torch_geometric.data import Data
 # import utils.sdf2graph
 from utils import sdf2graph
 
-
+# '../../../../../data/xc/molecule_datasets'
 class PCQM4Mv2Dataset_3D(InMemoryDataset):
-    def __init__(self, root='../../../../data/xc/molecule_datasets',
+    def __init__(self, root='/home/gxzy/ThreeD/data/pcqm4m-v2',
                  sdf2graph=sdf2graph,
                  transform=None,
                  pre_transform=None):
         self.root = root
         self.smiles2graph = sdf2graph
-        self.folder = os.path.join(root, 'pcqm4m-v2')
+        # self.root = os.path.join(root, 'pcqm4m-v2')
         super(PCQM4Mv2Dataset_3D, self).__init__(self.root, transform, pre_transform)
         self.data, self.slices = torch.load(self.processed_paths[0])
 
@@ -51,7 +51,7 @@ class PCQM4Mv2Dataset_3D(InMemoryDataset):
 
     @property
     def raw_file_names(self):
-        return 'raw/pcqm4m-v2-train.sdf'
+        return ['data.csv.gz', 'pcqm4m-v2-train.sdf']
 
     @property
     def processed_file_names(self):
@@ -60,15 +60,15 @@ class PCQM4Mv2Dataset_3D(InMemoryDataset):
     def download(self):
         print('Please checkout if the raw file is downloaded!')
 
-    @property
-    def processed_dir(self) -> str:
-        return osp.join(self.folder, 'processed_3d')
+    # @property
+    # def processed_dir(self) -> str:
+    #     return osp.join(self.root, 'processed_3d')
 
 
     def process(self):
-        sdf_data = Chem.SDMolSupplier(os.path.join(self.folder, self.raw_file_names),
+        csv_data = pd.read_csv(self.raw_paths[0])
+        sdf_data = Chem.SDMolSupplier(self.raw_paths[1],
                                       sanitize=True, removeHs=True, strictParsing=True)
-        csv_data = pd.read_csv(osp.join(self.folder, 'raw/data.csv.gz'))
         smiles_list = csv_data['smiles']
         homolumogap_list = csv_data['homolumogap']
         data_list = []
@@ -106,13 +106,13 @@ class PCQM4Mv2Dataset_3D(InMemoryDataset):
         torch.save((data, slices), self.processed_paths[0])
 
     def get_idx_split(self):
-        split_dict = replace_numpy_with_torchtensor(torch.load(osp.join(self.folder, 'split_dict.pt')))
+        split_dict = replace_numpy_with_torchtensor(torch.load(osp.join(self.root, 'split_dict.pt')))
         return split_dict
 
 
 if __name__ == '__main__':
     dataset = PCQM4Mv2Dataset_3D()
-    # print(dataset)
+    print(dataset)
     # print(dataset.data.edge_index)
     # print(dataset.data.edge_index.shape)
     # print(dataset.data.x.shape)
