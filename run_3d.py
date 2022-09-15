@@ -12,7 +12,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 
 import torch
 import torch.optim as optim
@@ -106,9 +106,10 @@ def import_model(args):
     return model
 
 def main(rank, world_size, args):
-    # os.environ['MASTER_ADDR'] = 'localhost'
-    # os.environ['MASTER_PORT'] = '14462'
-    dist.init_process_group(backend='nccl', init_method='tcp://127.0.0.1:28765', world_size=world_size, rank=rank)
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '14492'
+    dist.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
+
     # print('Parameters preparation complete! Start loading networks...')
     local_rank = dist.get_rank()
     torch.cuda.set_device(local_rank)
@@ -129,9 +130,13 @@ def main(rank, world_size, args):
     # train_dataset = dataset[: test_idx]
     # valid_dataset = dataset[test_idx:]
     # test_dataset = dataset[test_idx:]
+    valid_idx = int(len(split_idx['train']) * 0.9)
 
-    train_sampler = DistributedSampler(dataset[split_idx['train']], num_replicas=world_size, rank=rank, shuffle=True)
-    train_loader = DataLoader(dataset[split_idx['train']], batch_size=args.batch_size, shuffle=False,
+    # train_sampler = DistributedSampler(dataset[split_idx['train']], num_replicas=world_size, rank=rank, shuffle=True)
+    # train_loader = DataLoader(dataset[split_idx['train']], batch_size=args.batch_size, shuffle=False,
+    #                           num_workers=args.num_workers, sampler=train_sampler)
+    train_sampler = DistributedSampler(dataset[split_idx['train']][:valid_idx], num_replicas=world_size, rank=rank, shuffle=True)
+    train_loader = DataLoader(dataset[split_idx['train']][:valid_idx], batch_size=args.batch_size, shuffle=False,
                               num_workers=args.num_workers, sampler=train_sampler)
 
     model = import_model(args)
@@ -227,14 +232,15 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', type=int, default=None)
     parser.add_argument('--rank', type=int, default=4)
-    parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--num_workers', type=int, default=1)
     parser.add_argument("--local_rank", type=int, default=-1)
     parser.add_argument('--dataset_root', type=str, default='../../../../data/xc/molecule_datasets')
 
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--warmup', type=int, default=10)
     parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--batch_size', type=int, default=4096)
+
     parser.add_argument('--gnn', type=str, default='ComENet')
     parser.add_argument('--drop_ratio', type=float, default=0)
     parser.add_argument('--heads', type=int, default=10)
