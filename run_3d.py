@@ -90,7 +90,7 @@ def test(model, device, loader):
 
 def import_model(args):
     if args.gnn == 'ComENet':
-        from model import ComENet
+        from model.ComENet import ComENet
         from model.run import run
         num_tasks = 1
         model = ComENet(cutoff=8.0,
