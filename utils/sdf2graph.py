@@ -91,14 +91,14 @@ def sdf2graph(rdkit_mol, sdf_mol):
 
     for atom in mol.GetAtoms():
         atom_feature = \
-            [allowable_features['atomic_num'].index(atom.GetAtomicNum())] + \
-            [allowable_features['formal_charge'].index(atom.GetFormalCharge())] + \
-            [allowable_features['chirality'].index(atom.GetChiralTag())] + \
-            [allowable_features['hybridization'].index(atom.GetHybridization())] + \
-            [allowable_features['numH'].index(atom.GetTotalNumHs())] + \
-            [allowable_features['implicit_valence'].index(atom.GetImplicitValence())] + \
-            [allowable_features['degree'].index(atom.GetDegree())] + \
-            [allowable_features['isaromatic'].index(atom.GetIsAromatic())]
+        [allowable_features['atomic_num'].index(atom.GetAtomicNum())] +\
+        [allowable_features['formal_charge'].index(atom.GetFormalCharge())+atom_cumsum[0]]+\
+        [allowable_features['chirality'].index(atom.GetChiralTag()) + atom_cumsum[1]]+ \
+        [allowable_features['hybridization'].index(atom.GetHybridization()) + atom_cumsum[2]]+ \
+        [allowable_features['numH'].index(atom.GetTotalNumHs()) + atom_cumsum[3]] + \
+        [allowable_features['implicit_valence'].index(atom.GetImplicitValence()) + atom_cumsum[4]] + \
+        [allowable_features['degree'].index(atom.GetDegree()) + atom_cumsum[5]] + \
+        [allowable_features['isaromatic'].index(atom.GetIsAromatic()) + atom_cumsum[6]]
         atom_features_list.append(atom_feature)
     x = torch.tensor(np.array(atom_features_list), dtype=torch.long)
 

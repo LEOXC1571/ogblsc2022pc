@@ -261,4 +261,7 @@ if __name__ == '__main__':
     PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
     world_size = torch.cuda.device_count()
 
-    mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)
+    if world_size > 1:
+        mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)
+    else:
+        main(0, 1, args)
