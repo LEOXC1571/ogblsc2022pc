@@ -1,5 +1,9 @@
-from .comenet import ComENet
+
+from .utils import dist_calc
+from .features import torsion_emb, angle_emb
 
 __all__ = [
-    'ComENet'
+    'dist_calc',
+    'torsion_emb',
+    'angle_emb'
 ]

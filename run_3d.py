@@ -234,7 +234,7 @@ if __name__ == '__main__':
     parser.add_argument('--rank', type=int, default=4)
     parser.add_argument('--num_workers', type=int, default=1)
     parser.add_argument("--local_rank", type=int, default=-1)
-    parser.add_argument('--dataset_root', type=str, default='../../../../data/xc/molecule_datasets')
+    parser.add_argument('--dataset_root', type=str, default='../../../../data/xc/molecule_datasets/pcqm4m-v2')
 
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--warmup', type=int, default=10)
