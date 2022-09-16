@@ -90,7 +90,7 @@ def test(model, device, loader):
 
 def import_model(args):
     if args.gnn == 'ComENet':
-        from model.ComENet import ComENet
+        from model import ComENet
         from model.run import run
         num_tasks = 1
         model = ComENet(cutoff=8.0,
@@ -234,7 +234,7 @@ if __name__ == '__main__':
     parser.add_argument('--rank', type=int, default=4)
     parser.add_argument('--num_workers', type=int, default=1)
     parser.add_argument("--local_rank", type=int, default=-1)
-    parser.add_argument('--dataset_root', type=str, default='../../../../data/xc/molecule_datasets')
+    parser.add_argument('--dataset_root', type=str, default='../../../../data/xc/molecule_datasets/pcqm4m-v2')
 
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--warmup', type=int, default=10)

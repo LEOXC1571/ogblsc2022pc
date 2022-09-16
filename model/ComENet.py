@@ -13,8 +13,7 @@ from torch_geometric.nn import GraphConv, GraphNorm
 from torch_geometric.nn.acts import swish
 from torch_geometric.nn import inits
 
-from .comenet.utils import dist_calc
-from .comenet.features import angle_emb, torsion_emb
+from .comenet import dist_calc, angle_emb, torsion_emb
 
 from torch_scatter import scatter, scatter_min
 
