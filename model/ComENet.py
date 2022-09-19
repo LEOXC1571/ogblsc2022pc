@@ -132,16 +132,19 @@ class InterBock(nn.Module):
 
         self.conv1 = EdgeGraphConv(hidden_channels, hidden_channels)
         self.conv2 = EdgeGraphConv(hidden_channels, hidden_channels)
+        self.conv3 = EdgeGraphConv(hidden_channels, hidden_channels)
 
-        self.linear1 = Linear(hidden_channels, hidden_channels)
-        self.linear2 = Linear(hidden_channels, hidden_channels)
-        self.linear_cat = Linear(2 * hidden_channels, hidden_channels)
+        # self.linear1 = Linear(hidden_channels, hidden_channels)
+        # self.linear2 = Linear(hidden_channels, hidden_channels)
+        self.linear_cat = Linear(3 * hidden_channels, hidden_channels)
         self.norm = GraphNorm(hidden_channels)
 
         self.lin_feat1 = TwoLayerLinear(num_radial * num_spherical ** 2, middle_channels, hidden_channels)
         self.lin_feat2 = TwoLayerLinear(num_radial * num_spherical, middle_channels, hidden_channels)
 
         self.linear = Linear(hidden_channels, hidden_channels)
+        self.linear_edge = Linear(hidden_channels, hidden_channels)
+
         self.linears = nn.ModuleList()
         for _ in range(num_layers):
             self.linears.append(Linear(hidden_channels, hidden_channels))
@@ -152,17 +155,18 @@ class InterBock(nn.Module):
         self.conv1.reset_parameters()
         self.conv2.reset_parameters()
         self.norm.reset_parameters()
-        self.linear1.reset_parameters()
-        self.linear2.reset_parameters()
+        # self.linear1.reset_parameters()
+        # self.linear2.reset_parameters()
         self.linear.reset_parameters()
-        self.linear_cat. reset_parameters()
+        self.linear_edge.reset_parameters()
+        self.linear_cat.reset_parameters()
         self.lin_feat1.reset_parameters()
         self.lin_feat2.reset_parameters()
         for lin in self.linears:
             lin.reset_parameters()
         self.final.reset_parameters()
 
-    def forward(self, x, feature1, feature2, edge_index, batch):
+    def forward(self, x, edge_attr, feature1, feature2, edge_index, batch):
         x = self.act(self.linear(x))
         # print('init', torch.cuda.memory_allocated())
 
@@ -170,7 +174,7 @@ class InterBock(nn.Module):
         # print('lin_feat1', torch.cuda.memory_allocated())
         h1 = self.conv1(x, edge_index, feature1)
         # print('conv1', torch.cuda.memory_allocated())
-        h1 = self.linear1(h1)
+        #h1 = self.linear1(h1)
         # print('linear1', torch.cuda.memory_allocated())
         h1 = self.act(h1)
 
@@ -178,11 +182,15 @@ class InterBock(nn.Module):
         # print('lin_feat2', torch.cuda.memory_allocated())
         h2 = self.conv2(x, edge_index, feature2)
         # print('conv2', torch.cuda.memory_allocated())
-        h2 = self.linear2(h2)
+        #h2 = self.linear2(h2)
         # print('linear2', torch.cuda.memory_allocated())
         h2 = self.act(h2)
 
-        h = self.linear_cat(torch.cat([h1, h2], 1))
+        edge_attr = self.act(self.linear_edge(edge_attr))
+        edge_attr = self.conv3(x, edge_index, edge_attr)
+        edge_attr = self.act(edge_attr)
+
+        h = self.linear_cat(torch.cat([h1, h2, edge_attr], 1))
         # print('linear_cat', torch.cuda.memory_allocated())
 
         h = h + x
@@ -216,6 +224,7 @@ class ComENet(nn.Module):
         self.feat2 = angle_emb(num_radial=num_radial, num_spherical=num_spherical, cutoff=cutoff)
 
         self.x_emb = nn.Embedding(178, hidden_channels)
+        self.edge_emb = nn.Embedding(18, hidden_channels)
 
         self.inter_block = nn.ModuleList(
             [
@@ -238,7 +247,8 @@ class ComENet(nn.Module):
         self.out = nn.Linear(hidden_channels, out_channels)
 
     def reset_params(self):
-        self.x_emb.weight.data.uniform_(-sqrt(3), sqrt(3))
+        torch.nn.init.xavier_uniform_(self.x_emb.weight.data)
+        torch.nn.init.xavier_uniform_(self.edge_emb.weight.data)
         for linear in self.linear:
             linear.reset_parameters()
         self.out.reset_parameters()
@@ -248,6 +258,7 @@ class ComENet(nn.Module):
         data = argv[0]
         batch = data.batch
         x = data.x
+        edge_attr = data.edge_attr
         num_nodes = x.size(0)
         pos = data.pos
         edge_idx = data.edge_index
@@ -256,18 +267,20 @@ class ComENet(nn.Module):
         vecs = pos[j] - pos[i]
         dist = vecs.norm(dim=-1)
 
-        x = self.act(self.x_emb(x).sum(1))
+        x = self.x_emb(x).sum(1)
+        edge_attr = self.edge_emb(edge_attr).sum(1)
         # print('emb',torch.cuda.memory_allocated())
 
-        dist, theta, phi, tau = dist_calc(self.cutoff, vecs, dist, i, j, num_nodes)
+        theta, phi, tau = dist_calc(self.cutoff, vecs, dist, i, j, num_nodes)
         # print('dist_calc', torch.cuda.memory_allocated())
 
         feat1 = self.feat1(dist, theta, phi)
         feat2 = self.feat2(dist, tau)
+
         # print('feat', torch.cuda.memory_allocated())
 
         for inter in self.inter_block:
-            x = inter(x, feat1, feat2, edge_idx, batch)
+            x = inter(x, edge_attr, feat1, feat2, edge_idx, batch)
             # print('inter', torch.cuda.memory_allocated())
 
         for lin in self.linear:

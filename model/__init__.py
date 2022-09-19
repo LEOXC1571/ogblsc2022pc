@@ -4,7 +4,8 @@
 # Email: leoxc1571@163.com
 
 from .ComENet import ComENet
-
+from .gin import SimComE
 __all__ = [
-    "ComENet"
+    "ComENet",
+    "SimComE"
 ]

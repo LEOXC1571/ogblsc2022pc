@@ -5,6 +5,7 @@
 # @Email: leoxc1571@163.com
 
 
+from contextlib import contextmanager
 import os
 from pyexpat import model
 import random
@@ -12,7 +13,6 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 
 import torch
 import torch.optim as optim
@@ -33,8 +33,6 @@ from dataset.pcqm4mv2 import PCQM4Mv2Dataset
 from dataset.pcqm4mv2_3d import PCQM4Mv2Dataset_3D
 from utils.loader import DataLoaderMasking
 from utils.compose import *
-
-
 
 
 def train(model, device, loader, criterion, optimizer):
@@ -91,19 +89,33 @@ def test(model, device, loader):
 def import_model(args):
     if args.gnn == 'ComENet':
         from model import ComENet
-        from model.run import run
-        num_tasks = 1
         model = ComENet(cutoff=8.0,
                         num_layers=4,
-                        hidden_channels=256,
-                        middle_channels=64,
+                        hidden_channels=512,
+                        middle_channels=256,
                         out_channels=1,
                         num_radial=3,
                         num_spherical=2,
                         num_output_layers=3)
+    elif args.gnn == 'ginComE':
+        from model import SimComE
+        model = SimComE(cutoff=8.0,
+                        num_layers=4,
+                        hidden_channels=400,
+                        out_channels=1,
+                        num_radial=3,
+                        num_spherical=2)
     else:
         raise ValueError('Invalid MODEL type')
     return model
+
+@contextmanager
+def torch_distributed_zero_first(local_rank):
+    if local_rank not in [-1, 0]:
+        dist.barrier()
+    yield
+    if local_rank == 0:
+        dist.barrier()
 
 def main(rank, world_size, args):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -112,19 +124,29 @@ def main(rank, world_size, args):
 
     # print('Parameters preparation complete! Start loading networks...')
     local_rank = dist.get_rank()
-    torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
 
-    current_path = os.path.dirname(os.path.realpath(__file__))
     np.random.seed(42)
     torch.manual_seed(42)
     torch.cuda.manual_seed(42)
     random.seed(42)
 
     # dataset = PCQM4Mv2Dataset(root=args.dataset_root, smiles2graph=smilestograph, transform=transform)
-    dataset = PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
-    split_idx = dataset.get_idx_split()
+    # dataset = PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
+    # split_idx = dataset.get_idx_split()
     
+    # Load dataset and get train_dataset only in main process
+    with torch_distributed_zero_first(rank):
+        dataset = PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
+        split_idx = dataset.get_idx_split()
+        # training with subset samples
+        if args.train_subset:
+            subset_ratio = 0.1
+            subset_idx = torch.randperm(len(split_idx["train"]))[:int(subset_ratio*len(split_idx["train"]))]
+            train_dataset = dataset[split_idx['train'][subset_idx]]
+        else:  # full samples
+            train_dataset = dataset[split_idx['train']]
+
     # split_idx = dataset.get_idx_split()['train']
     # test_idx = int(len(dataset) * 0.8)
     # train_dataset = dataset[: test_idx]
@@ -135,15 +157,15 @@ def main(rank, world_size, args):
     # train_sampler = DistributedSampler(dataset[split_idx['train']], num_replicas=world_size, rank=rank, shuffle=True)
     # train_loader = DataLoader(dataset[split_idx['train']], batch_size=args.batch_size, shuffle=False,
     #                           num_workers=args.num_workers, sampler=train_sampler)
-    train_sampler = DistributedSampler(dataset[split_idx['train']][:valid_idx], num_replicas=world_size, rank=rank, shuffle=True)
-    train_loader = DataLoader(dataset[split_idx['train']][:valid_idx], batch_size=args.batch_size, shuffle=False,
+    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size,
                               num_workers=args.num_workers, sampler=train_sampler)
 
     model = import_model(args)
     model.to(device)
     model = DistributedDataParallel(model, device_ids=[rank])
 
-    criterion = torch.nn.L1Loss().to(device)
+    criterion = torch.nn.L1Loss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
 
@@ -242,13 +264,13 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=4096)
 
     parser.add_argument('--gnn', type=str, default='ComENet')
-    parser.add_argument('--drop_ratio', type=float, default=0)
+    parser.add_argument('--drop_ratio', type=float, default=0.2)
     parser.add_argument('--heads', type=int, default=10)
     parser.add_argument('--graph_pooling', type=str, default='sum')
     parser.add_argument('--num_message_passing', type=int, default=3)
     parser.add_argument('--num_layers', type=int, default=3)
     parser.add_argument('--emb_dim', type=int, default=600)
-    parser.add_argument('--train_subset', default=False, action='store_true')
+    parser.add_argument('--train_subset', action='store_true')
 
     parser.add_argument('--log_dir', type=str, default="log")
     parser.add_argument('--checkpoint_dir', type=str, default='ckpt')
@@ -258,7 +280,9 @@ if __name__ == '__main__':
     print(args)
 
     os.environ['NCCL_SHM_DISABLE'] = '1'
-    PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
+
+    # PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
     world_size = torch.cuda.device_count()
 
     if world_size > 1:
