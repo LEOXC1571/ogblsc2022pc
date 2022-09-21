@@ -23,6 +23,7 @@ from rdkit.Chem import AllChem
 import torch
 
 from torch_geometric.data import Data
+from utils.gt import isomorphic_core
 
 decimal.getcontext().rounding = "ROUND_HALF_UP"
 allowable_features = {
@@ -146,6 +147,117 @@ def sdf2graph(rdkit_mol, sdf_mol):
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, pos=position)
 
     return data
+
+def rdf2graph(rdkit_mol, sdf_mol):
+    assert rdkit_mol is not None
+    atom_features_list = []
+    mol = sdf_mol if sdf_mol is not None else rdkit_mol
+
+    for atom in mol.GetAtoms():
+        atom_feature = \
+        [allowable_features['atomic_num'].index(atom.GetAtomicNum())] +\
+        [allowable_features['formal_charge'].index(atom.GetFormalCharge())+atom_cumsum[0]]+\
+        [allowable_features['chirality'].index(atom.GetChiralTag()) + atom_cumsum[1]]+ \
+        [allowable_features['hybridization'].index(atom.GetHybridization()) + atom_cumsum[2]]+ \
+        [allowable_features['numH'].index(atom.GetTotalNumHs()) + atom_cumsum[3]] + \
+        [allowable_features['implicit_valence'].index(atom.GetImplicitValence()) + atom_cumsum[4]] + \
+        [allowable_features['degree'].index(atom.GetDegree()) + atom_cumsum[5]] + \
+        [allowable_features['isaromatic'].index(atom.GetIsAromatic()) + atom_cumsum[6]]
+        atom_features_list.append(atom_feature)
+
+        n_src = list()
+        n_tgt = list()
+        n_ids = [n.GetIdx() for n in atom.GetNeighbors()]
+        if len(n_ids) > 1:
+            n_src.append(atom.GetIdx())
+            n_tgt.append(n_ids)
+        nums_neigh = len(n_src)
+        nei_src_index = np.array(n_src, dtype=np.int64).reshape(1, -1)
+        nei_tgt_index = np.zeros((6, nums_neigh), dtype=np.int64)
+        nei_tgt_mask = np.ones((6, nums_neigh), dtype=np.bool)
+
+        for i, n_ids in enumerate(n_tgt):
+            nei_tgt_index[: len(n_ids), i] = n_ids
+            nei_tgt_mask[: len(n_ids), i] = False
+
+    x = torch.tensor(np.array(atom_features_list), dtype=torch.long)
+
+    num_bond_features = 5
+    if len(mol.GetBonds()) > 0:
+        edges_list = []
+        edge_features_list = []
+        for bond in mol.GetBonds():
+            i = bond.GetBeginAtomIdx()
+            j = bond.GetEndAtomIdx()
+            edge_feature = \
+                [allowable_features['bond_type'].index(bond.GetBondType())] + \
+                [allowable_features['bond_dirs'].index(bond.GetBondDir() if bond.GetBondDir() in allowable_features[
+                    'bond_dirs'] else Chem.rdchem.BondDir.NONE) + bond_cumsum[0]] + \
+                [allowable_features['bond_isconjugated'].index(bond.GetIsConjugated()) + bond_cumsum[1]] + \
+                [allowable_features['bond_inring'].index(bond.IsInRing()) + bond_cumsum[2]] + \
+                [allowable_features['bond_stereo'].index(str(bond.GetStereo())) + bond_cumsum[3]]
+            edges_list.append((i, j))
+            edge_features_list.append(edge_feature)
+            edges_list.append((j, i))
+            edge_features_list.append(edge_feature)
+        edge_index = torch.tensor(np.array(edges_list).T, dtype=torch.long)
+        edge_attr = torch.tensor(np.array(edge_features_list),
+                                 dtype=torch.long)
+    else:  # mol has no bonds
+        # print('mol has no bonds')
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+        edge_attr = torch.empty((0, num_bond_features), dtype=torch.long)
+
+    if sdf_mol is not None:
+        position = sdf_mol.GetConformer().GetPositions()
+    else:
+        try:
+            temp_mol = Chem.AddHs(rdkit_mol)
+            # AllChem.EmbedMultipleConfs(temp_mol, numConfs=40)
+            AllChem.EmbedMolecule(temp_mol, useRandomCoords=True)
+            AllChem.MMFFOptimizeMolecule(temp_mol)
+            rdkit_mol = Chem.RemoveHs(temp_mol)
+            position = rdkit_mol.GetConformer().GetPositions()
+        except:
+            AllChem.Compute2DCoords(rdkit_mol)
+            position = rdkit_mol.GetConformer().GetPositions()
+
+    position = torch.tensor(position, dtype=torch.float)
+    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, pos=position, nei_src_index=nei_src_index,
+                nei_tgt_index=nei_tgt_index, nei_tgt_mask=nei_tgt_mask, isomorphisms=isomorphic_core(mol))
+
+    return data
+
+def get_atom_feature_dims():
+    return list(
+        map(
+            len,
+            [
+                allowable_features['atomic_num'],
+                allowable_features['formal_charge'],
+                allowable_features['chirality'],
+                allowable_features['hybridization'],
+                allowable_features['numH'],
+                allowable_features['implicit_valence'],
+                allowable_features['degree'],
+                allowable_features['isaromatic']
+            ],
+        )
+    )
+
+def get_bond_feature_dims():
+    return list(
+        map(
+            len,
+            [
+                allowable_features['bond_type'],
+                allowable_features['bond_dirs'],
+                allowable_features['bond_isconjugated'],
+                allowable_features['bond_inring'],
+                allowable_features['bond_stereo']
+            ],
+        )
+    )
 
 
 # def sdf2graph(rdkit_mol, sdf_mol):
