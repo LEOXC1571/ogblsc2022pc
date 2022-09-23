@@ -283,6 +283,10 @@ class DMCG(nn.Module):
             batch.num_graphs,
         )
 
+        n_nodes = torch.cat((node_batch.diff(), torch.LongTensor([1,]).to(node_batch.device)))
+        n_nodes = torch.where(n_nodes==1)[0]
+        self.n_nodes = torch.cat((torch.LongTensor([-1,]).to(node_batch.device), n_nodes)).diff()
+
         onehot_x = one_hot_atoms(x)
         onehot_edge_attr = one_hot_bonds(edge_attr)
 
@@ -496,7 +500,7 @@ class DMCG(nn.Module):
 
         pos = batch.pos
 
-        new_idx = DMCG.update_iso(pos, pos_list[-1], batch)
+        new_idx = DMCG.update_iso(pos, pos_list[-1], batch, self.n_nodes)
 
         loss_tmp, _ = self.alignment_loss(
             pos, extra_output["prior_pos_list"][-1].index_select(0, new_idx), batch
@@ -603,13 +607,14 @@ class DMCG(nn.Module):
     @staticmethod
     def alignment_loss(pos_y, pos_x, batch, clamp=None):
         with torch.no_grad():
-            num_nodes = batch.n_nodes
+            num_nodes = batch.num_nodes
+            node_batch = batch.batch
             total_nodes = pos_y.shape[0]
             num_graphs = batch.num_graphs
-            pos_y_mean = global_mean_pool(pos_y, batch.batch)
-            pos_x_mean = global_mean_pool(pos_x, batch.batch)
-            y = pos_y - torch.repeat_interleave(pos_y_mean, num_nodes, dim=0)
-            x = pos_x - torch.repeat_interleave(pos_x_mean, num_nodes, dim=0)
+            pos_y_mean = global_mean_pool(pos_y, node_batch)
+            pos_x_mean = global_mean_pool(pos_x, node_batch)
+            y = pos_y - pos_y_mean[node_batch]
+            x = pos_x - pos_x_mean[node_batch]
             a = y + x
             b = y - x
             a = a.view(total_nodes, 1, 3)
@@ -629,8 +634,8 @@ class DMCG(nn.Module):
             min_q = v[:, :, 0]
             rotation = DMCG.quaternion_to_rotation_matrix(min_q)
             t = pos_y_mean - torch.einsum("kj,kij->ki", pos_x_mean, rotation)
-            rotation = torch.repeat_interleave(rotation, num_nodes, dim=0)
-            t = torch.repeat_interleave(t, num_nodes, dim=0)
+            rotation = rotation[node_batch]
+            t = t[node_batch]
         pos_x = torch.einsum("kj,kij->ki", pos_x, rotation) + t
         if clamp is None:
             loss = global_mean_pool((pos_y - pos_x).norm(dim=-1, keepdim=True), batch.batch).mean()
@@ -670,10 +675,10 @@ class DMCG(nn.Module):
             return torch.argmin(loss)
 
     @staticmethod
-    def update_iso(pos_y, pos_x, batch):
+    def update_iso(pos_y, pos_x, batch, n_nodes):
         with torch.no_grad():
             pre_nodes = 0
-            num_nodes = batch.num_nodes
+            num_nodes = n_nodes
             isomorphisms = batch.isomorphisms
             new_idx_x = []
             for i in range(batch.num_graphs):
@@ -822,7 +827,7 @@ class DMCG(nn.Module):
                 z = torch.randn_like(u_embed)
 
             prior_output = [x, edge_attr, u]
-            z_decoder = torch.repeat_interleave(z, num_nodes, dim=0)
+            z_decoder = torch.repeat_interleave(z, self.n_nodes, dim=0)
 
             if self.reuse_prior:
                 x, edge_attr, u = prior_output

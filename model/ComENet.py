@@ -257,6 +257,7 @@ class ComENet(nn.Module):
         dist = vecs.norm(dim=-1)
 
         x = self.act(self.x_emb(x).sum(1))
+        # edge_emb
         # print('emb',torch.cuda.memory_allocated())
 
         dist, theta, phi, tau = dist_calc(self.cutoff, vecs, dist, i, j, num_nodes)

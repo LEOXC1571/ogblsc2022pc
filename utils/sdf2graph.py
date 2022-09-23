@@ -19,6 +19,7 @@ import decimal
 from decimal import Decimal
 from rdkit import Chem
 from rdkit.Chem import AllChem
+import copy
 
 import torch
 
@@ -181,6 +182,7 @@ def rdf2graph(rdkit_mol, sdf_mol):
             nei_tgt_mask[: len(n_ids), i] = False
 
     x = torch.tensor(np.array(atom_features_list), dtype=torch.long)
+    n_nodes = x.size(0)
 
     num_bond_features = 5
     if len(mol.GetBonds()) > 0:
@@ -207,24 +209,16 @@ def rdf2graph(rdkit_mol, sdf_mol):
         # print('mol has no bonds')
         edge_index = torch.empty((2, 0), dtype=torch.long)
         edge_attr = torch.empty((0, num_bond_features), dtype=torch.long)
-
+    n_edges = edge_index.size(-1)
     if sdf_mol is not None:
         position = sdf_mol.GetConformer().GetPositions()
     else:
-        try:
-            temp_mol = Chem.AddHs(rdkit_mol)
-            # AllChem.EmbedMultipleConfs(temp_mol, numConfs=40)
-            AllChem.EmbedMolecule(temp_mol, useRandomCoords=True)
-            AllChem.MMFFOptimizeMolecule(temp_mol)
-            rdkit_mol = Chem.RemoveHs(temp_mol)
-            position = rdkit_mol.GetConformer().GetPositions()
-        except:
-            AllChem.Compute2DCoords(rdkit_mol)
-            position = rdkit_mol.GetConformer().GetPositions()
+        position = np.zeros((n_nodes, 3))
 
     position = torch.tensor(position, dtype=torch.float)
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, pos=position, nei_src_index=nei_src_index,
-                nei_tgt_index=nei_tgt_index, nei_tgt_mask=nei_tgt_mask, isomorphisms=isomorphic_core(mol))
+                n_nodes=n_nodes, n_edges=n_edges, nei_tgt_index=nei_tgt_index, nei_tgt_mask=nei_tgt_mask,
+                isomorphisms=isomorphic_core(mol), mol=copy.deepcopy(mol))
 
     return data
 

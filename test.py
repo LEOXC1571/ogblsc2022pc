@@ -36,7 +36,7 @@ sdf_data = Chem.SDMolSupplier(os.path.join('../../../../data/xc/molecule_dataset
 csv_data = pd.read_csv(osp.join('../../../../data/xc/molecule_datasets/pcqm4m-v2', 'raw/data.csv.gz'))
 smiles_list = csv_data['smiles']
 homolumogap_list = csv_data['homolumogap']
-idx_list = [3486859, 3486992, 3493518, 3449636, 3519129, 3519932, 3520152, 3516236, 3517222]
+idx_list = [3682021, 3682024, 3682073, 3682291, 3682311, 3682627, 3682637, 3682674]
 
 for i in tqdm(idx_list):
     smiles = smiles_list[i]

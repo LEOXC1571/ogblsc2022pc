@@ -8,7 +8,7 @@
 # Description:
 
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '6'
+os.environ['CUDA_VISIBLE_DEVICES'] = '4'
 import argparse
 import torch
 from torch_geometric.data import DataLoader
@@ -19,7 +19,8 @@ from tqdm import tqdm
 import numpy as np
 import random
 # from dataset.pcqm4mv2_gen import ConfGenDataset
-from dataset.pcqm4mv2_3d import PCQM4Mv2Dataset_3D
+# from dataset.pcqm4mv2_3d import PCQM4Mv2Dataset_3D
+from dataset.pcqm4mv2_gen import PCQM4Mv2Dataset_3D
 from model import DMCG
 from torch.optim.lr_scheduler import LambdaLR
 from model.dmcg.utils import Cosinebeta, WarmCosine, set_rdmol_positions, get_best_rmsd, init_distributed_mode
@@ -82,7 +83,10 @@ def evaluate(model, device, loader, args):
             pred, _ = model(batch)
         pred = pred[-1]
         batch_size = batch.num_graphs
-        n_nodes = batch.n_nodes.tolist()
+        n_nodes = torch.cat((batch.batch.diff(), torch.LongTensor([1,]).to(batch.batch.device)))
+        n_nodes = torch.where(n_nodes==1)[0]
+        n_nodes = torch.cat((torch.LongTensor([-1,]).to(batch.batch.device), n_nodes)).diff()
+        n_nodes = n_nodes.tolist()
         pre_nodes = 0
         for i in range(batch_size):
             mol_labels.append(batch.rd_mol[i])
@@ -104,74 +108,69 @@ def evaluate(model, device, loader, args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--global-reducer", type=str, default="sum")
-    parser.add_argument("--node-reducer", type=str, default="sum")
-    parser.add_argument("--graph-pooling", type=str, default="sum")
-    parser.add_argument("--dropedge-rate", type=float, default=0.1)
-    parser.add_argument("--dropnode-rate", type=float, default=0.1)
-    parser.add_argument("--num-layers", type=int, default=6)
-    parser.add_argument("--decoder-layers", type=int, default=None)
-    parser.add_argument("--latent-size", type=int, default=256)
-    parser.add_argument("--mlp-hidden-size", type=int, default=1024)
-    parser.add_argument("--mlp_layers", type=int, default=2)
-    parser.add_argument("--use-layer-norm", action="store_true", default=False)
-
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--num-workers", type=int, default=4)
-    # parser.add_argument("--log-dir", type=str, default="", help="tensorboard log directory")
-    parser.add_argument("--checkpoint-dir", type=str, default="")
     parser.add_argument("--distributed", type=bool, default=False)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--num_workers", type=int, default=1)
 
-    parser.add_argument("--log-interval", type=int, default=100)
-    parser.add_argument("--dropout", type=float, default=0.0)
-    parser.add_argument("--encoder-dropout", type=float, default=0.0)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--layernorm-before", action="store_true", default=False)
-    parser.add_argument("--use-bn", action="store_true", default=False)
-    parser.add_argument("--weight-decay", type=float, default=1e-2)
-    parser.add_argument("--use-adamw", action="store_true", default=False)
+    parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument("--lr_warmup", action="store_true", default=True)
+    parser.add_argument("--batch_size", type=int, default=1024)
+
+    parser.add_argument("--global_reducer", type=str, default="sum")
+    parser.add_argument("--node_reducer", type=str, default="sum")
+    parser.add_argument("--graph_pooling", type=str, default="sum")
+    parser.add_argument("--dropedge_rate", type=float, default=0.1)
+    parser.add_argument("--dropnode_rate", type=float, default=0.1)
+    parser.add_argument("--num_layers", type=int, default=4)
+    parser.add_argument("--decoder_layers", type=int, default=None)
+    parser.add_argument("--latent_size", type=int, default=256)
+    parser.add_argument("--mlp_hidden_size", type=int, default=1024)
+    parser.add_argument("--mlp_layers", type=int, default=2)
+    parser.add_argument("--use_layer_norm", action="store_true", default=False)
+
+    # parser.add_argument("--log-dir", type=str, default="", help="tensorboard log directory")
+    parser.add_argument("--checkpoint_dir", type=str, default="")
+
+    parser.add_argument("--log_interval", type=int, default=100)
+    parser.add_argument("--dropout", type=float, default=0.1) # 0.2
+    parser.add_argument("--encoder_dropout", type=float, default=0.0)
+    parser.add_argument("--layernorm_before", action="store_true", default=False)
+    parser.add_argument("--use_bn", action="store_true", default=True)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--use_adamw", action="store_true", default=True)
     parser.add_argument("--beta2", type=float, default=0.999)
     parser.add_argument("--period", type=float, default=10)
+    parser.add_argument("--enable_tb", action="store_true", default=True)
 
-    parser.add_argument("--base-path", type=str, default="/data/code/ConfGF/dataset/")
-    parser.add_argument(
-        "--dataset-name", type=str, default="qm9", choices=["qm9", "drugs", "iso17"]
-    )
-    parser.add_argument("--train-size", type=float, default=0.8)
-    parser.add_argument("--seed", type=int, default=2021)
-    parser.add_argument("--lr-warmup", action="store_true", default=False)
-    parser.add_argument("--enable-tb", action="store_true", default=False)
-    parser.add_argument("--aux-loss", type=float, default=0.0)
-    parser.add_argument("--train-subset", action="store_true", default=False)
-    parser.add_argument("--eval-from", type=str, default=None)
-    parser.add_argument("--extend-edge", action="store_true", default=False)
-    parser.add_argument(
-        "--data-split", type=str, choices=["cgcf", "default", "confgf"], default="default"
-    )
-    parser.add_argument("--reuse-prior", action="store_true", default=False)
+
+    parser.add_argument("--train_size", type=float, default=0.8)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--aux_loss", type=float, default=0.1) #0.2
+    parser.add_argument("--train_subset", action="store_true", default=False)
+    parser.add_argument("--extend_edge", action="store_true", default=False)
+    parser.add_argument("--reuse_prior", action="store_true", default=False)
     parser.add_argument("--cycle", type=int, default=1)
 
     parser.add_argument("--vae-beta", type=float, default=1.0)
-    parser.add_argument("--vae-beta-max", type=float, default=None)
-    parser.add_argument("--vae-beta-min", type=float, default=None)
-    parser.add_argument("--pred-pos-residual", action="store_true", default=False)
+    parser.add_argument("--vae-beta-max", type=float, default=0.05)
+    parser.add_argument("--vae-beta-min", type=float, default=0.0001)
+    parser.add_argument("--pred-pos-residual", action="store_true", default=True)
     parser.add_argument("--local_rank", type=int, default=0)
-    parser.add_argument("--node-attn", action="store_true", default=False)
+    parser.add_argument("--node-attn", action="store_true", default=True)
     parser.add_argument("--global-attn", action="store_true", default=False)
     parser.add_argument("--shared-decoder", action="store_true", default=False)
-    parser.add_argument("--shared-output", action="store_true", default=False)
+    parser.add_argument("--shared-output", action="store_true", default=True)
     parser.add_argument("--clamp-dist", type=float, default=None)
     parser.add_argument("--use-global", action="store_true", default=False)
     parser.add_argument("--sg-pos", action="store_true", default=False)
-    parser.add_argument("--remove-hs", action="store_true", default=False)
-    parser.add_argument("--grad-norm", type=float, default=None)
+    parser.add_argument("--remove-hs", action="store_true", default=True)
+    parser.add_argument("--grad-norm", type=float, default=None) # 10.0
     parser.add_argument("--use-ss", action="store_true", default=False)
     parser.add_argument("--rand-aug", action="store_true", default=False)
     parser.add_argument("--not-origin", action="store_true", default=False)
-    parser.add_argument("--ang-lam", type=float, default=0.)
-    parser.add_argument("--bond-lam", type=float, default=0.)
-    parser.add_argument("--no-3drot", action="store_true", default=False)
+    parser.add_argument("--ang-lam", type=float, default=0.2)
+    parser.add_argument("--bond-lam", type=float, default=0.1)
+    parser.add_argument("--no-3drot", action="store_true", default=True)
 
     args = parser.parse_args()
 
@@ -186,20 +185,12 @@ def main():
 
     device = torch.device(args.device)
 
-    # dataset = ConfGenDataset(
-    #     root='../../../../data/xc/molecule_datasets/pcqm4m-v2',
-    #     dataset=args.dataset_name,
-    #     base_path=args.base_path,
-    #     seed=args.seed,
-    #     extend_edge=args.extend_edge,
-    #     data_split=args.data_split,
-    #     remove_hs=args.remove_hs,
-    # )
     dataset = PCQM4Mv2Dataset_3D(root='../../../../data/xc/molecule_datasets/pcqm4m-v2')
     split_idx = dataset.get_idx_split()
-    valid_idx = int(len(split_idx['train']) * 0.8)
+    index = torch.LongTensor(random.sample(range(len(split_idx['train'])), int(len(split_idx['train'])/3)))
+    valid_idx = int(len(index) * 0.8)
     dataset_train = (
-        dataset[split_idx["train"][:valid_idx]]
+        dataset[index[:valid_idx]]
         if not args.train_subset
         else dataset[split_idx["train"]][:102400]
     )
@@ -213,17 +204,18 @@ def main():
         sampler_train, args.batch_size, drop_last=True
     )
 
+
     train_loader = DataLoader(
         dataset_train, batch_sampler=batch_sampler_train, num_workers=args.num_workers,
     )
     train_loader_dev = DataLoader(
-        dataset[split_idx["train"]][:102400],
+        dataset[index][:102400],
         batch_size=args.batch_size * 2,
         shuffle=False,
         num_workers=args.num_workers,
     )
     valid_loader = DataLoader(
-        dataset[split_idx["train"][valid_idx:]],
+        dataset[index[valid_idx:]],
         batch_size=args.batch_size * 2,
         shuffle=False,
         num_workers=args.num_workers,
@@ -255,7 +247,6 @@ def main():
         "cycle": args.cycle,
         "pred_pos_residual": args.pred_pos_residual,
         "node_attn": args.node_attn,
-        "global_attn": args.global_attn,
         "shared_decoder": args.shared_decoder,
         "use_global": args.use_global,
         "sg_pos": args.sg_pos,
@@ -275,11 +266,6 @@ def main():
         args.checkpoint_dir = "" if args.rank != 0 else args.checkpoint_dir
         args.enable_tb = False if args.rank != 0 else args.enable_tb
         args.disable_tqdm = args.rank != 0
-
-    if args.eval_from is not None:
-        assert os.path.exists(args.eval_from)
-        checkpoint = torch.load(args.eval_from, map_location=device)["model_state_dict"]
-        model_without_ddp.load_state_dict(checkpoint)
 
     num_params = sum(p.numel() for p in model_without_ddp.parameters())
     print(f"#Params: {num_params}")

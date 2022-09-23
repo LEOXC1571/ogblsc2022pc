@@ -5,5 +5,9 @@
 # @Email: leoxc1571@163.com
 
 from .sdf2graph import sdf2graph
+from .sdf2graph import rdf2graph
 
-__all__ = ['sdf2graph']
+__all__ = [
+    'sdf2graph',
+    'rdf2graph'
+]
