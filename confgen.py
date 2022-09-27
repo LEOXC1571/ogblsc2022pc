@@ -8,10 +8,13 @@
 # Description:
 
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '4'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 import argparse
 import torch
 from torch_geometric.data import DataLoader
+import torch.multiprocessing as mp
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 import torch.optim as optim
 from torch import nn
 from torch.utils.tensorboard import SummaryWriter
@@ -89,9 +92,9 @@ def evaluate(model, device, loader, args):
         n_nodes = n_nodes.tolist()
         pre_nodes = 0
         for i in range(batch_size):
-            mol_labels.append(batch.rd_mol[i])
+            mol_labels.append(batch.mol[i])
             mol_preds.append(
-                set_rdmol_positions(batch.rd_mol[i], pred[pre_nodes : pre_nodes + n_nodes[i]])
+                set_rdmol_positions(batch.mol[i], pred[pre_nodes : pre_nodes + n_nodes[i]])
             )
             pre_nodes += n_nodes[i]
 
@@ -105,77 +108,10 @@ def evaluate(model, device, loader, args):
     return np.mean(rmsd_list)
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--distributed", type=bool, default=False)
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--num_workers", type=int, default=1)
-
-    parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--lr_warmup", action="store_true", default=True)
-    parser.add_argument("--batch_size", type=int, default=1024)
-
-    parser.add_argument("--global_reducer", type=str, default="sum")
-    parser.add_argument("--node_reducer", type=str, default="sum")
-    parser.add_argument("--graph_pooling", type=str, default="sum")
-    parser.add_argument("--dropedge_rate", type=float, default=0.1)
-    parser.add_argument("--dropnode_rate", type=float, default=0.1)
-    parser.add_argument("--num_layers", type=int, default=4)
-    parser.add_argument("--decoder_layers", type=int, default=None)
-    parser.add_argument("--latent_size", type=int, default=256)
-    parser.add_argument("--mlp_hidden_size", type=int, default=1024)
-    parser.add_argument("--mlp_layers", type=int, default=2)
-    parser.add_argument("--use_layer_norm", action="store_true", default=False)
-
-    # parser.add_argument("--log-dir", type=str, default="", help="tensorboard log directory")
-    parser.add_argument("--checkpoint_dir", type=str, default="")
-
-    parser.add_argument("--log_interval", type=int, default=100)
-    parser.add_argument("--dropout", type=float, default=0.1) # 0.2
-    parser.add_argument("--encoder_dropout", type=float, default=0.0)
-    parser.add_argument("--layernorm_before", action="store_true", default=False)
-    parser.add_argument("--use_bn", action="store_true", default=True)
-    parser.add_argument("--weight_decay", type=float, default=0.01)
-    parser.add_argument("--use_adamw", action="store_true", default=True)
-    parser.add_argument("--beta2", type=float, default=0.999)
-    parser.add_argument("--period", type=float, default=10)
-    parser.add_argument("--enable_tb", action="store_true", default=True)
-
-
-    parser.add_argument("--train_size", type=float, default=0.8)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--aux_loss", type=float, default=0.1) #0.2
-    parser.add_argument("--train_subset", action="store_true", default=False)
-    parser.add_argument("--extend_edge", action="store_true", default=False)
-    parser.add_argument("--reuse_prior", action="store_true", default=False)
-    parser.add_argument("--cycle", type=int, default=1)
-
-    parser.add_argument("--vae-beta", type=float, default=1.0)
-    parser.add_argument("--vae-beta-max", type=float, default=0.05)
-    parser.add_argument("--vae-beta-min", type=float, default=0.0001)
-    parser.add_argument("--pred-pos-residual", action="store_true", default=True)
-    parser.add_argument("--local_rank", type=int, default=0)
-    parser.add_argument("--node-attn", action="store_true", default=True)
-    parser.add_argument("--global-attn", action="store_true", default=False)
-    parser.add_argument("--shared-decoder", action="store_true", default=False)
-    parser.add_argument("--shared-output", action="store_true", default=True)
-    parser.add_argument("--clamp-dist", type=float, default=None)
-    parser.add_argument("--use-global", action="store_true", default=False)
-    parser.add_argument("--sg-pos", action="store_true", default=False)
-    parser.add_argument("--remove-hs", action="store_true", default=True)
-    parser.add_argument("--grad-norm", type=float, default=None) # 10.0
-    parser.add_argument("--use-ss", action="store_true", default=False)
-    parser.add_argument("--rand-aug", action="store_true", default=False)
-    parser.add_argument("--not-origin", action="store_true", default=False)
-    parser.add_argument("--ang-lam", type=float, default=0.2)
-    parser.add_argument("--bond-lam", type=float, default=0.1)
-    parser.add_argument("--no-3drot", action="store_true", default=True)
-
-    args = parser.parse_args()
-
-    init_distributed_mode(args)
-    print(args)
+def main(rank, world_size, args):
+    # os.environ['MASTER_ADDR'] = 'localhost'
+    # os.environ['MASTER_PORT'] = '14492'
+    dist.init_process_group(backend='nccl', init_method='tcp://127.0.0.1:23439', world_size=world_size, rank=rank)
 
     CosineBeta = Cosinebeta(args)
     np.random.seed(args.seed)
@@ -183,11 +119,13 @@ def main():
     torch.cuda.manual_seed(args.seed)
     random.seed(args.seed)
 
-    device = torch.device(args.device)
+    local_rank = dist.get_rank()
+    torch.cuda.set_device(local_rank)
+    device = torch.device("cuda", local_rank)
 
     dataset = PCQM4Mv2Dataset_3D(root='../../../../data/xc/molecule_datasets/pcqm4m-v2')
     split_idx = dataset.get_idx_split()
-    index = torch.LongTensor(random.sample(range(len(split_idx['train'])), int(len(split_idx['train'])/3)))
+    index = torch.LongTensor(random.sample(range(len(split_idx['train'])), int(len(split_idx['train'])/4)))
     valid_idx = int(len(index) * 0.8)
     dataset_train = (
         dataset[index[:valid_idx]]
@@ -196,7 +134,7 @@ def main():
     )
 
     if args.distributed:
-        sampler_train = DistributedSampler(dataset_train)
+        sampler_train = DistributedSampler(dataset_train, num_replicas=world_size, rank=rank, shuffle=True)
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
 
@@ -260,12 +198,12 @@ def main():
     model_without_ddp = model
     args.disable_tqdm = False
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
         model_without_ddp = model.module
 
-        args.checkpoint_dir = "" if args.rank != 0 else args.checkpoint_dir
-        args.enable_tb = False if args.rank != 0 else args.enable_tb
-        args.disable_tqdm = args.rank != 0
+        args.checkpoint_dir = "" if rank != 0 else args.checkpoint_dir
+        args.enable_tb = False if rank != 0 else args.enable_tb
+        args.disable_tqdm = rank != 0
 
     num_params = sum(p.numel() for p in model_without_ddp.parameters())
     print(f"#Params: {num_params}")
@@ -297,6 +235,8 @@ def main():
     valid_curve = []
     test_curve = []
 
+    dist.barrier()
+
     for epoch in range(1, args.epochs + 1):
         if args.distributed:
             sampler_train.set_epoch(epoch)
@@ -304,19 +244,18 @@ def main():
         print("=====Epoch {}".format(epoch))
         print("Training...")
         loss_dict = train(model, device, train_loader, optimizer, scheduler, args)
-        print("Evaluating...")
-        train_pref = evaluate(model, device, train_loader_dev, args)
-        valid_pref = evaluate(model, device, valid_loader, args)
-        # test_pref = evaluate(model, device, test_loader, args)
+        if rank == 0:
+            print("Evaluating...")
+            train_pref = evaluate(model, device, train_loader_dev, args)
+            valid_pref = evaluate(model, device, valid_loader, args)
+            # test_pref = evaluate(model, device, test_loader, args)
+            if args.checkpoint_dir:
+                print(f"Setting {os.path.basename(os.path.normpath(args.checkpoint_dir))}...")
+                # print(f"Train: {train_pref} Validation: {valid_pref} Test: {test_pref}")
+            train_curve.append(train_pref)
+            valid_curve.append(valid_pref)
+            # test_curve.append(test_pref)
 
-        if args.checkpoint_dir:
-            print(f"Setting {os.path.basename(os.path.normpath(args.checkpoint_dir))}...")
-        # print(f"Train: {train_pref} Validation: {valid_pref} Test: {test_pref}")
-
-        train_curve.append(train_pref)
-        valid_curve.append(valid_pref)
-        # test_curve.append(test_pref)
-        if args.checkpoint_dir:
             logs = {"Train": train_pref, "Valid": valid_pref}
             with io.open(
                 os.path.join(args.checkpoint_dir, "log.txt"), "a", encoding="utf8", newline="\n"
@@ -330,7 +269,8 @@ def main():
                 "scheduler_state_dict": scheduler.state_dict(),
                 "args": args,
             }
-            torch.save(checkpoint, os.path.join(args.checkpoint_dir, f"checkpoint_{epoch}.pt"))
+            if epoch % args.ckpt_interval == 0:
+                torch.save(checkpoint, os.path.join(args.checkpoint_dir, f"checkpoint_{epoch}.pt"))
             if args.enable_tb:
                 tb_writer.add_scalar("evaluation/train", train_pref, epoch)
                 tb_writer.add_scalar("evaluation/valid", valid_pref, epoch)
@@ -350,4 +290,74 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--distributed", action="store_true", default=False)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--num_workers", type=int, default=1)
+
+    parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument("--lr_warmup", action="store_true", default=True)
+    parser.add_argument("--batch_size", type=int, default=512)
+
+    parser.add_argument("--global_reducer", type=str, default="sum")
+    parser.add_argument("--node_reducer", type=str, default="sum")
+    parser.add_argument("--graph_pooling", type=str, default="sum")
+    parser.add_argument("--dropedge_rate", type=float, default=0.1)
+    parser.add_argument("--dropnode_rate", type=float, default=0.1)
+    parser.add_argument("--num_layers", type=int, default=4)
+    parser.add_argument("--decoder_layers", type=int, default=None)
+    parser.add_argument("--latent_size", type=int, default=256)
+    parser.add_argument("--mlp_hidden_size", type=int, default=512)
+    parser.add_argument("--mlp_layers", type=int, default=2)
+    parser.add_argument("--use_layer_norm", action="store_true", default=False)
+
+    # parser.add_argument("--log-dir", type=str, default="", help="tensorboard log directory")
+    parser.add_argument("--checkpoint_dir", type=str, default='../../../../data/xc/ogblsc/conf_ckpt')
+    parser.add_argument("--ckpt_interval", type=int, default=20)
+    parser.add_argument("--log_interval", type=int, default=100)
+    parser.add_argument("--dropout", type=float, default=0.1)  # 0.2
+    parser.add_argument("--encoder_dropout", type=float, default=0.0)
+    parser.add_argument("--layernorm_before", action="store_true", default=False)
+    parser.add_argument("--use_bn", action="store_true", default=True)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--use_adamw", action="store_true", default=True)
+    parser.add_argument("--beta2", type=float, default=0.999)
+    parser.add_argument("--period", type=float, default=10)
+    parser.add_argument("--enable_tb", action="store_true", default=True)
+
+    parser.add_argument("--train_size", type=float, default=0.8)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--aux_loss", type=float, default=0.1)  # 0.2
+    parser.add_argument("--train_subset", action="store_true", default=False)
+    parser.add_argument("--extend_edge", action="store_true", default=False)
+    parser.add_argument("--reuse_prior", action="store_true", default=False)
+    parser.add_argument("--cycle", type=int, default=1)
+
+    parser.add_argument("--vae_beta", type=float, default=1.0)
+    parser.add_argument("--vae_beta_max", type=float, default=0.05)
+    parser.add_argument("--vae_beta_min", type=float, default=0.0001)
+    parser.add_argument("--pred_pos_residual", action="store_true", default=True)
+    parser.add_argument("--local_rank", type=int, default=0)
+    parser.add_argument("--node_attn", action="store_true", default=True)
+    parser.add_argument("--global_attn", action="store_true", default=False)
+    parser.add_argument("--shared_decoder", action="store_true", default=False)
+    parser.add_argument("--shared_output", action="store_true", default=True)
+    parser.add_argument("--clamp_dist", type=float, default=None)
+    parser.add_argument("--use_global", action="store_true", default=False)
+    parser.add_argument("--sg_pos", action="store_true", default=False)
+    parser.add_argument("--remove_hs", action="store_true", default=True)
+    parser.add_argument("--grad_norm", type=float, default=None)  # 10.0
+    parser.add_argument("--use_ss", action="store_true", default=False)
+    parser.add_argument("--rand_aug", action="store_true", default=False)
+    parser.add_argument("--not_origin", action="store_true", default=False)
+    parser.add_argument("--ang_lam", type=float, default=0.)
+    parser.add_argument("--bond_lam", type=float, default=0.)
+    parser.add_argument("--no_3drot", action="store_true", default=True)
+
+    args = parser.parse_args()
+
+    # os.environ['NCCL_SHM_DISABLE'] = '1'
+    world_size = torch.cuda.device_count()
+
+    mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)

@@ -6,13 +6,12 @@
 
 
 import os
-from pyexpat import model
 import random
 import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3,7'
 
 import torch
 import torch.optim as optim
@@ -22,19 +21,13 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR
 from torch_geometric.loader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from torch.utils.data.sampler import RandomSampler
 from torch.utils.data.distributed import DistributedSampler
 
 from ogb.lsc import PCQM4Mv2Evaluator
-from utils.smiles2graph import smilestograph
-from utils.sdf2graph import sdf2graph
+from utils import sdf2graph, add_conf
 
-from dataset.pcqm4mv2 import PCQM4Mv2Dataset
+# from dataset.pcqm4mv2_gen import PCQM4Mv2Dataset_3D
 from dataset.pcqm4mv2_3d import PCQM4Mv2Dataset_3D
-from utils.loader import DataLoaderMasking
-from utils.compose import *
-
-
 
 
 def train(model, device, loader, criterion, optimizer):
@@ -56,7 +49,6 @@ def eval(model, device, loader, evaluator):
     model.eval()
     y_true = []
     y_pred = []
-
     for step, batch in enumerate(tqdm(loader, desc="Iteration")):
         batch = batch.to(device)
         with torch.no_grad():
@@ -88,6 +80,7 @@ def test(model, device, loader):
 
     return y_pred
 
+
 def import_model(args):
     if args.gnn == 'ComENet':
         from model import ComENet
@@ -104,9 +97,10 @@ def import_model(args):
         raise ValueError('Invalid MODEL type')
     return model
 
+
 def main(rank, world_size, args):
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '14492'
+    os.environ['MASTER_PORT'] = '10192'
     dist.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
 
     # print('Parameters preparation complete! Start loading networks...')
@@ -120,20 +114,29 @@ def main(rank, world_size, args):
     torch.cuda.manual_seed(42)
     random.seed(42)
 
-    # dataset = PCQM4Mv2Dataset(root=args.dataset_root, smiles2graph=smilestograph, transform=transform)
     dataset = PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
     split_idx = dataset.get_idx_split()
-    
-    # split_idx = dataset.get_idx_split()['train']
-    # test_idx = int(len(dataset) * 0.8)
-    # train_dataset = dataset[: test_idx]
-    # valid_dataset = dataset[test_idx:]
-    # test_dataset = dataset[test_idx:]
+
     valid_idx = int(len(split_idx['train']) * 0.9)
 
-    # train_sampler = DistributedSampler(dataset[split_idx['train']], num_replicas=world_size, rank=rank, shuffle=True)
-    # train_loader = DataLoader(dataset[split_idx['train']], batch_size=args.batch_size, shuffle=False,
-    #                           num_workers=args.num_workers, sampler=train_sampler)
+    if rank == 0 and args.conf_gen and args.conf_ckpt is not None:
+        from model import DMCG
+        gen_model = DMCG().to(device)
+        conf_ckpt = torch.load(args.conf_ckpt, map_location=device)["model_state_dict"]
+        cur_state_dict = gen_model.state_dict()
+        del_keys = []
+        for k in conf_ckpt.keys():
+            if k not in cur_state_dict:
+                del_keys.append(k)
+        for k in del_keys:
+            del conf_ckpt[k]
+        gen_model.load_state_dict(conf_ckpt)
+        unk_loader = DataLoader(dataset[len(split_idx['train']):], batch_size=args.batch_size, shuffle=False,
+                                  num_workers=args.num_workers)
+        add_conf(gen_model, unk_loader, device)
+
+
+
     train_sampler = DistributedSampler(dataset[split_idx['train']][:valid_idx], num_replicas=world_size, rank=rank, shuffle=True)
     train_loader = DataLoader(dataset[split_idx['train']][:valid_idx], batch_size=args.batch_size, shuffle=False,
                               num_workers=args.num_workers, sampler=train_sampler)
@@ -142,14 +145,16 @@ def main(rank, world_size, args):
     model.to(device)
     model = DistributedDataParallel(model, device_ids=[rank])
 
+
     criterion = torch.nn.L1Loss().to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
 
+
     if rank == 0:
         evaluator = PCQM4Mv2Evaluator()
         valid_loader = DataLoader(dataset[split_idx['valid']], batch_size=args.batch_size,
-                                         shuffle=False, num_workers=args.num_workers)
+                                  shuffle=False, num_workers=args.num_workers)
 
         if args.checkpoint_dir != '':
             os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -176,7 +181,10 @@ def main(rank, world_size, args):
 
         if rank == 0:
             print('Evaluating...')
-            valid_mae = eval(model, device, valid_loader, evaluator)
+            if args.conf_gen:
+                valid_mae = eval(model, device, valid_loader, evaluator, confgen_model=gen_model)
+            else:
+                valid_mae = eval(model, device, valid_loader, evaluator)
 
             print(f'Epoch: {epoch:03d}, Train: {train_mae:.4f}, \
             Validation: {valid_mae:.4f}')
@@ -216,7 +224,10 @@ def main(rank, world_size, args):
             testdev_pred = test(best_model, device, testdev_loader)
             testdev_pred = testdev_pred.cpu().detach().numpy()
 
-            testchallenge_pred = test(best_model, device, testchallenge_loader)
+            if args.conf_gen:
+                testchallenge_pred = test(best_model, device, testchallenge_loader, confgen_model=gen_model)
+            else:
+                testchallenge_pred = test(best_model, device, testchallenge_loader)
             testchallenge_pred = testchallenge_pred.cpu().detach().numpy()
 
             print('Saving test submission file...')
@@ -238,7 +249,9 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--warmup', type=int, default=10)
     parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--batch_size', type=int, default=4096)
+    parser.add_argument('--batch_size', type=int, default=2048)
+    parser.add_argument('--conf_gen', action='store_true', default=False)
+    parser.add_argument('--conf_ckpt', type=str, default='conf_ckpt/checkpoint_20.pt')
 
     parser.add_argument('--gnn', type=str, default='ComENet')
     parser.add_argument('--drop_ratio', type=float, default=0)
@@ -257,10 +270,7 @@ if __name__ == '__main__':
     print(args)
 
     os.environ['NCCL_SHM_DISABLE'] = '1'
-    PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
+    # PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
     world_size = torch.cuda.device_count()
 
-    if world_size > 1:
-        mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)
-    else:
-        main(0, 1, args)
+    mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)

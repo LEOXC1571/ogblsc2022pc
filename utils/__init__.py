@@ -6,8 +6,10 @@
 
 from .sdf2graph import sdf2graph
 from .sdf2graph import rdf2graph
+from .add_conf import add_conf
 
 __all__ = [
     'sdf2graph',
-    'rdf2graph'
+    'rdf2graph',
+    'add_conf'
 ]

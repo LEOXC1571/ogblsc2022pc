@@ -26,7 +26,6 @@ import torch
 from torch_geometric.data import Data
 from utils.gt import isomorphic_core
 
-decimal.getcontext().rounding = "ROUND_HALF_UP"
 allowable_features = {
     'atomic_num': list(range(1, 122)),  # 119for mask, 120 for collection
     'formal_charge': ['unk', -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
@@ -133,16 +132,17 @@ def sdf2graph(rdkit_mol, sdf_mol):
     if sdf_mol is not None:
         position = sdf_mol.GetConformer().GetPositions()
     else:
-        try:
-            temp_mol = Chem.AddHs(rdkit_mol)
-            # AllChem.EmbedMultipleConfs(temp_mol, numConfs=40)
-            AllChem.EmbedMolecule(temp_mol, useRandomCoords=True)
-            AllChem.MMFFOptimizeMolecule(temp_mol)
-            rdkit_mol = Chem.RemoveHs(temp_mol)
-            position = rdkit_mol.GetConformer().GetPositions()
-        except:
-            AllChem.Compute2DCoords(rdkit_mol)
-            position = rdkit_mol.GetConformer().GetPositions()
+        position = np.zeros((x.size(0), 3))
+        # try:
+        #     temp_mol = Chem.AddHs(rdkit_mol)
+        #     # AllChem.EmbedMultipleConfs(temp_mol, numConfs=40)
+        #     AllChem.EmbedMolecule(temp_mol, useRandomCoords=True)
+        #     AllChem.MMFFOptimizeMolecule(temp_mol)
+        #     rdkit_mol = Chem.RemoveHs(temp_mol)
+        #     position = rdkit_mol.GetConformer().GetPositions()
+        # except:
+        #     AllChem.Compute2DCoords(rdkit_mol)
+        #     position = rdkit_mol.GetConformer().GetPositions()
 
     position = torch.tensor(position, dtype=torch.float)
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, pos=position)
