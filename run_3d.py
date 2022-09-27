@@ -133,7 +133,13 @@ def main(rank, world_size, args):
         gen_model.load_state_dict(conf_ckpt)
         unk_loader = DataLoader(dataset[len(split_idx['train']):], batch_size=args.batch_size, shuffle=False,
                                   num_workers=args.num_workers)
-        add_conf(gen_model, unk_loader, device)
+        mol_pred, n_nodes = add_conf(gen_model, unk_loader, device)
+        pos_ckpt = {
+            'n_nodes': n_nodes,
+            'pos': mol_pred
+        }
+        torch.save(pos_ckpt, 'ckpt/pos_ckpt.pt')
+        del gen_model, conf_ckpt, cur_state_dict, del_keys, unk_loader, mol_pred, n_nodes
 
 
 
