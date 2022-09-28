@@ -8,7 +8,7 @@
 # Description:
 
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import argparse
 import torch
 from torch_geometric.data import DataLoader

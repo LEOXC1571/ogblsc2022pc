@@ -11,7 +11,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '3,7'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1,3'
 
 import torch
 import torch.optim as optim
@@ -45,14 +45,17 @@ def train(model, device, loader, criterion, optimizer):
     return loss_accum / (step + 1)
 
 
-def eval(model, device, loader, evaluator):
+def eval(model, device, loader, evaluator, batch_size, pos=None):
     model.eval()
     y_true = []
     y_pred = []
     for step, batch in enumerate(tqdm(loader, desc="Iteration")):
         batch = batch.to(device)
         with torch.no_grad():
-            pred = model(batch).view(-1,)
+            if pos is not None:
+                pos = torch.cat(list(pos[step*batch_size: (step*batch_size+batch.batch[-1])+1])).to(device)
+                batch.pos = pos
+            pred = model(batch).view(-1)
 
         y_true.append(batch.y.view(pred.shape).detach().cpu())
         y_pred.append(pred.detach().cpu())
@@ -65,13 +68,16 @@ def eval(model, device, loader, evaluator):
     return evaluator.eval(input_dict)["mae"]
 
 
-def test(model, device, loader):
+def test(model, device, loader, batch_size, pos=None):
     model.eval()
     y_pred = []
 
     for step, batch in enumerate(tqdm(loader, desc="Iteration")):
         batch = batch.to(device)
         with torch.no_grad():
+            if pos is not None:
+                pos = torch.cat(list(pos[step*batch_size: (step*batch_size+batch.batch[-1])+1])).to(device)
+                batch.pos = pos
             pred = model(batch).view(-1,)
 
         y_pred.append(pred.detach().cpu())
@@ -120,26 +126,29 @@ def main(rank, world_size, args):
     valid_idx = int(len(split_idx['train']) * 0.9)
 
     if rank == 0 and args.conf_gen and args.conf_ckpt is not None:
-        from model import DMCG
-        gen_model = DMCG().to(device)
-        conf_ckpt = torch.load(args.conf_ckpt, map_location=device)["model_state_dict"]
-        cur_state_dict = gen_model.state_dict()
-        del_keys = []
-        for k in conf_ckpt.keys():
-            if k not in cur_state_dict:
-                del_keys.append(k)
-        for k in del_keys:
-            del conf_ckpt[k]
-        gen_model.load_state_dict(conf_ckpt)
-        unk_loader = DataLoader(dataset[len(split_idx['train']):], batch_size=args.batch_size, shuffle=False,
-                                  num_workers=args.num_workers)
-        mol_pred, n_nodes = add_conf(gen_model, unk_loader, device)
-        pos_ckpt = {
-            'n_nodes': n_nodes,
-            'pos': mol_pred
-        }
-        torch.save(pos_ckpt, 'ckpt/pos_ckpt.pt')
-        del gen_model, conf_ckpt, cur_state_dict, del_keys, unk_loader, mol_pred, n_nodes
+        if not os.path.exists('ckpt/pos_ckpt.pt'):
+            from model import DMCG
+            gen_model = DMCG().to(device)
+            conf_ckpt = torch.load(args.conf_ckpt, map_location=device)["model_state_dict"]
+            cur_state_dict = gen_model.state_dict()
+            del_keys = []
+            for k in conf_ckpt.keys():
+                if k not in cur_state_dict:
+                    del_keys.append(k)
+            for k in del_keys:
+                del conf_ckpt[k]
+            gen_model.load_state_dict(conf_ckpt)
+            unk_loader = DataLoader(dataset[len(split_idx['train']):], batch_size=2048, shuffle=False,
+                                      num_workers=args.num_workers)
+            mol_pred, idx = add_conf(gen_model, unk_loader, device)
+            pos_ckpt = {
+                'idx': idx,
+                'pos': mol_pred
+            }
+            torch.save(pos_ckpt, 'ckpt/pos_ckpt.pt')
+            del gen_model, conf_ckpt, cur_state_dict, del_keys, unk_loader, mol_pred, idx
+        else:
+            pass
 
 
 
@@ -161,6 +170,8 @@ def main(rank, world_size, args):
         evaluator = PCQM4Mv2Evaluator()
         valid_loader = DataLoader(dataset[split_idx['valid']], batch_size=args.batch_size,
                                   shuffle=False, num_workers=args.num_workers)
+
+        pos_ckpt = torch.load('ckpt/pos_ckpt.pt')
 
         if args.checkpoint_dir != '':
             os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -188,7 +199,8 @@ def main(rank, world_size, args):
         if rank == 0:
             print('Evaluating...')
             if args.conf_gen:
-                valid_mae = eval(model, device, valid_loader, evaluator, confgen_model=gen_model)
+                valid_pos = pos_ckpt['pos'][split_idx['valid'] - 3378606]
+                valid_mae = eval(model, device, valid_loader, evaluator, args.batch_size, pos=valid_pos)
             else:
                 valid_mae = eval(model, device, valid_loader, evaluator)
 
@@ -222,18 +234,18 @@ def main(rank, world_size, args):
             testdev_loader = DataLoader(dataset[split_idx["test-dev"]], batch_size=args.batch_size, shuffle=False)
             testchallenge_loader = DataLoader(dataset[split_idx["test-challenge"]], batch_size=args.batch_size,
                                         shuffle=False)
+            test_pos = pos_ckpt['pos'][split_idx['test-dev'] - 3378606]
+            testchallenge_pos = pos_ckpt['pos'][split_idx['test-challenge'] - 3378606]
+
             best_model = import_model(args)
             best_model.to(device)
             best_model_ckpt = torch.load(os.path.join(args.checkpoint_dir, 'checkpoint.pt'))
             print(f"best val mae: {best_model_ckpt['best_val_mae']:.4f}")
             best_model.load_state_dict(best_model_ckpt['model_state_dict'])
-            testdev_pred = test(best_model, device, testdev_loader)
-            testdev_pred = testdev_pred.cpu().detach().numpy()
 
-            if args.conf_gen:
-                testchallenge_pred = test(best_model, device, testchallenge_loader, confgen_model=gen_model)
-            else:
-                testchallenge_pred = test(best_model, device, testchallenge_loader)
+            testdev_pred = test(best_model, device, testdev_loader, args.batch_size, pos=test_pos)
+            testdev_pred = testdev_pred.cpu().detach().numpy()
+            testchallenge_pred = test(best_model, device, testchallenge_loader, args.batch_size, pos=testchallenge_pos)
             testchallenge_pred = testchallenge_pred.cpu().detach().numpy()
 
             print('Saving test submission file...')
@@ -255,7 +267,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--warmup', type=int, default=10)
     parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--batch_size', type=int, default=2048)
+    parser.add_argument('--batch_size', type=int, default=4096)
     parser.add_argument('--conf_gen', action='store_true', default=False)
     parser.add_argument('--conf_ckpt', type=str, default='conf_ckpt/checkpoint_20.pt')
 

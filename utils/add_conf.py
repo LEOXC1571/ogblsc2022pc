@@ -8,28 +8,29 @@
 # Description:
 
 import torch
+import numpy as np
 from tqdm import tqdm
 
 
 def split_tensor(x: torch.Tensor, batch: torch.Tensor):
     length = torch.unique(batch, return_counts=True)[1].cpu()
     dup_count = tuple(length.numpy())
-    split = x.split(dup_count, dim=0)
-    return list(split), length
+    split = x.cpu().split(dup_count, dim=0)
+    split = np.array(split)
+    return split
 
 
 def add_conf(model, loader, device):
     model.eval()
-    mol_pred = []
-    n_nodes = []
+    temp_mol = []
+    node_batch = []
     print('Start generating conformation for molecules in valid and test set...')
-    for batch in tqdm(loader, desc='Iteration'):
-        temp = []
+    for step, batch in enumerate(tqdm(loader, desc='Iteration')):
         batch.to(device)
         with torch.no_grad():
             pred, _ = model(batch)
-        split_pred, length = split_tensor(pred[-1], batch.batch)
-        mol_pred.extend(split_pred)
-        n_nodes.append(length)
-    torch.cat(n_nodes)
-    return mol_pred, n_nodes
+        temp_mol.append(pred[-1])
+        node_batch.append(batch.batch + step * 2048)
+    mol_pred = split_tensor(torch.cat(temp_mol), torch.cat(node_batch))
+    idx = list(range(3378606, 3746620))
+    return mol_pred, idx
