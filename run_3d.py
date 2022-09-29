@@ -10,8 +10,8 @@ import random
 import argparse
 import numpy as np
 from tqdm import tqdm
-
-os.environ['CUDA_VISIBLE_DEVICES'] = '1,3'
+import time
+os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
 
 import torch
 import torch.optim as optim
@@ -34,14 +34,23 @@ def train(model, device, loader, criterion, optimizer):
     model.train()
     loss_accum = 0
 
+    start_time = time.time()
     for step, batch in enumerate(tqdm(loader, desc="Iteration")):
+        load_time = time.time()
+        print('Load time:', load_time-start_time)
         batch = batch.to(device)
         pred = model(batch).view(-1,)
+        fw_time = time.time()
+        print('Forward time:', fw_time-load_time)
         optimizer.zero_grad()
         loss = criterion(pred, batch.y)
         loss.backward()
         optimizer.step()
+        opt_time = time.time()
+        print('Opt time:', opt_time-fw_time)
         loss_accum += loss.detach().cpu().item()
+        print('Train time:', opt_time - start_time)
+        start_time = time.time()
     return loss_accum / (step + 1)
 
 
@@ -150,15 +159,22 @@ def main(rank, world_size, args):
         else:
             pass
 
-
-
-    train_sampler = DistributedSampler(dataset[split_idx['train']][:valid_idx], num_replicas=world_size, rank=rank, shuffle=True)
+    dataset_start_time = time.time()
+    train_sampler = DistributedSampler(dataset[split_idx['train']][:valid_idx], num_replicas=world_size,
+                                       rank=rank, shuffle=True)
+    dataset_middle_time = time.time()
     train_loader = DataLoader(dataset[split_idx['train']][:valid_idx], batch_size=args.batch_size, shuffle=False,
                               num_workers=args.num_workers, sampler=train_sampler)
+    dataset_end_time = time.time()
+    print(dataset_end_time-dataset_start_time)
 
+    model_start_time = time.time()
     model = import_model(args)
     model.to(device)
+    model_load_time = time.time()
     model = DistributedDataParallel(model, device_ids=[rank])
+    model_dist_time = time.time()
+    print(model_load_time-model_start_time, model_dist_time-model_load_time)
 
 
     criterion = torch.nn.L1Loss().to(device)
@@ -190,11 +206,14 @@ def main(rank, world_size, args):
     dist.barrier()
     
     for epoch in range(1, args.epochs + 1):
+        train_start = time.time()
         train_loader.sampler.set_epoch(epoch)
         print("=====Epoch {}".format(epoch))
         print('Training...')
         train_mae = train(model, device, train_loader, criterion, optimizer)
         dist.barrier()
+        train_end = time.time()
+        print(train_end - train_start)
 
         if rank == 0:
             print('Evaluating...')
