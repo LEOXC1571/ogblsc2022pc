@@ -34,23 +34,23 @@ def train(model, device, loader, criterion, optimizer):
     model.train()
     loss_accum = 0
 
-    start_time = time.time()
+    # start_time = time.time()
     for step, batch in enumerate(tqdm(loader, desc="Iteration")):
-        load_time = time.time()
-        print('Load time:', load_time-start_time)
+        # load_time = time.time()
+        # print('Load time:', load_time-start_time)
         batch = batch.to(device)
         pred = model(batch).view(-1,)
-        fw_time = time.time()
-        print('Forward time:', fw_time-load_time)
+        # fw_time = time.time()
+        # print('Forward time:', fw_time-load_time)
         optimizer.zero_grad()
         loss = criterion(pred, batch.y)
         loss.backward()
         optimizer.step()
-        opt_time = time.time()
-        print('Opt time:', opt_time-fw_time)
+        # opt_time = time.time()
+        # print('Opt time:', opt_time-fw_time)
         loss_accum += loss.detach().cpu().item()
-        print('Train time:', opt_time - start_time)
-        start_time = time.time()
+        # print('Train time:', opt_time - start_time)
+        # start_time = time.time()
     return loss_accum / (step + 1)
 
 
@@ -62,8 +62,8 @@ def eval(model, device, loader, evaluator, batch_size, pos=None):
         batch = batch.to(device)
         with torch.no_grad():
             if pos is not None:
-                pos = torch.cat(list(pos[step*batch_size: (step*batch_size+batch.batch[-1])+1])).to(device)
-                batch.pos = pos
+                batch_pos = torch.cat(list(pos[step*batch_size: (step*batch_size+batch.batch[-1])+1])).to(device)
+                batch.pos = batch_pos
             pred = model(batch).view(-1)
 
         y_true.append(batch.y.view(pred.shape).detach().cpu())
@@ -85,8 +85,8 @@ def test(model, device, loader, batch_size, pos=None):
         batch = batch.to(device)
         with torch.no_grad():
             if pos is not None:
-                pos = torch.cat(list(pos[step*batch_size: (step*batch_size+batch.batch[-1])+1])).to(device)
-                batch.pos = pos
+                batch_pos = torch.cat(list(pos[step*batch_size: (step*batch_size+batch.batch[-1])+1])).to(device)
+                batch.pos = batch_pos
             pred = model(batch).view(-1,)
 
         y_pred.append(pred.detach().cpu())
@@ -132,7 +132,7 @@ def main(rank, world_size, args):
     dataset = PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
     split_idx = dataset.get_idx_split()
 
-    valid_idx = int(len(split_idx['train']) * 0.9)
+    valid_idx = int(len(split_idx['train']) * 0.98)
 
     if rank == 0 and args.conf_gen and args.conf_ckpt is not None:
         if not os.path.exists('ckpt/pos_ckpt.pt'):
@@ -159,32 +159,30 @@ def main(rank, world_size, args):
         else:
             pass
 
-    dataset_start_time = time.time()
     train_sampler = DistributedSampler(dataset[split_idx['train']][:valid_idx], num_replicas=world_size,
                                        rank=rank, shuffle=True)
-    dataset_middle_time = time.time()
     train_loader = DataLoader(dataset[split_idx['train']][:valid_idx], batch_size=args.batch_size, shuffle=False,
                               num_workers=args.num_workers, sampler=train_sampler)
-    dataset_end_time = time.time()
-    print(dataset_end_time-dataset_start_time)
 
-    model_start_time = time.time()
     model = import_model(args)
     model.to(device)
-    model_load_time = time.time()
+    if args.load_ckpt:
+        ckpt = torch.load(os.path.join(args.checkpoint_dir, 'checkpoint.pt'))
+        model.load_state_dict(ckpt['model_state_dict'])
     model = DistributedDataParallel(model, device_ids=[rank])
-    model_dist_time = time.time()
-    print(model_load_time-model_start_time, model_dist_time-model_load_time)
 
 
     criterion = torch.nn.L1Loss().to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
 
+    if args.load_ckpt:
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        scheduler.load_state_dict(ckpt['scheduler_state_dict'])
 
     if rank == 0:
         evaluator = PCQM4Mv2Evaluator()
-        valid_loader = DataLoader(dataset[split_idx['valid']], batch_size=args.batch_size,
+        valid_loader = DataLoader(dataset[split_idx['train']][valid_idx:], batch_size=args.batch_size,
                                   shuffle=False, num_workers=args.num_workers)
 
         pos_ckpt = torch.load('ckpt/pos_ckpt.pt')
@@ -221,7 +219,7 @@ def main(rank, world_size, args):
                 valid_pos = pos_ckpt['pos'][split_idx['valid'] - 3378606]
                 valid_mae = eval(model, device, valid_loader, evaluator, args.batch_size, pos=valid_pos)
             else:
-                valid_mae = eval(model, device, valid_loader, evaluator)
+                valid_mae = eval(model, device, valid_loader, evaluator, args.batch_size)
 
             print(f'Epoch: {epoch:03d}, Train: {train_mae:.4f}, \
             Validation: {valid_mae:.4f}')
@@ -234,9 +232,11 @@ def main(rank, world_size, args):
                 best_valid_mae = valid_mae
                 if args.checkpoint_dir != '':
                     print('Saving checkpoint...')
-                    checkpoint = {'epoch': epoch, 'model_state_dict': model.state_dict(),
+                    checkpoint = {'epoch': epoch,
+                                  'model_state_dict': model.state_dict(),
                                   'optimizer_state_dict': optimizer.state_dict(),
-                                  'scheduler_state_dict': scheduler.state_dict(), 'best_val_mae': best_valid_mae,
+                                  'scheduler_state_dict': scheduler.state_dict(),
+                                  'best_val_mae': best_valid_mae,
                                   'num_params': num_params}
                     torch.save(checkpoint, os.path.join(args.checkpoint_dir, 'checkpoint.pt'))
 
@@ -289,6 +289,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=4096)
     parser.add_argument('--conf_gen', action='store_true', default=False)
     parser.add_argument('--conf_ckpt', type=str, default='conf_ckpt/checkpoint_20.pt')
+    parser.add_argument('--load_ckpt', action='store_true', default=False)
 
     parser.add_argument('--gnn', type=str, default='ComENet')
     parser.add_argument('--drop_ratio', type=float, default=0)

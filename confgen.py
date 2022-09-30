@@ -8,7 +8,7 @@
 # Description:
 
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 import argparse
 import torch
 from torch_geometric.data import DataLoader
@@ -45,14 +45,7 @@ def train(model, device, loader, optimizer, scheduler, args):
         else:
             atom_pred_list, extra_output = model(batch)
             optimizer.zero_grad()
-
-            if args.distributed:
-                loss, loss_dict = model.module.compute_loss(
-                    atom_pred_list, extra_output, batch, args
-                )
-            else:
-                loss, loss_dict = model.compute_loss(atom_pred_list, extra_output, batch, args)
-
+            loss, loss_dict = model.module.compute_loss(atom_pred_list, extra_output, batch, args)
             loss.backward()
             if args.grad_norm is not None:
                 nn.utils.clip_grad_norm_(model.parameters(), args.grad_norm)
@@ -109,15 +102,13 @@ def evaluate(model, device, loader, args):
 
 
 def main(rank, world_size, args):
-    # os.environ['MASTER_ADDR'] = 'localhost'
-    # os.environ['MASTER_PORT'] = '14492'
     dist.init_process_group(backend='nccl', init_method='tcp://127.0.0.1:23439', world_size=world_size, rank=rank)
 
     CosineBeta = Cosinebeta(args)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
-    random.seed(args.seed)
+    np.random.seed(42)
+    torch.manual_seed(42)
+    torch.cuda.manual_seed(42)
+    random.seed(42)
 
     local_rank = dist.get_rank()
     torch.cuda.set_device(local_rank)
@@ -127,43 +118,15 @@ def main(rank, world_size, args):
     split_idx = dataset.get_idx_split()
     index = torch.LongTensor(random.sample(range(len(split_idx['train'])), int(len(split_idx['train'])/4)))
     valid_idx = int(len(index) * 0.8)
-    dataset_train = (
-        dataset[index[:valid_idx]]
-        if not args.train_subset
-        else dataset[split_idx["train"]][:102400]
-    )
+    dataset_train = dataset[index[:valid_idx]]
 
-    if args.distributed:
-        sampler_train = DistributedSampler(dataset_train, num_replicas=world_size, rank=rank, shuffle=True)
-    else:
-        sampler_train = torch.utils.data.RandomSampler(dataset_train)
+    sampler_train = DistributedSampler(dataset_train, num_replicas=world_size, rank=rank, shuffle=True)
+    train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=False,
+                              num_workers=args.num_workers, sampler=sampler_train)
 
-    batch_sampler_train = torch.utils.data.BatchSampler(
-        sampler_train, args.batch_size, drop_last=True
-    )
-
-
-    train_loader = DataLoader(
-        dataset_train, batch_sampler=batch_sampler_train, num_workers=args.num_workers,
-    )
-    train_loader_dev = DataLoader(
-        dataset[index][:102400],
-        batch_size=args.batch_size * 2,
-        shuffle=False,
-        num_workers=args.num_workers,
-    )
-    valid_loader = DataLoader(
-        dataset[index[valid_idx:]],
-        batch_size=args.batch_size * 2,
-        shuffle=False,
-        num_workers=args.num_workers,
-    )
-    # test_loader = DataLoader(
-    #     dataset[split_idx["test"]],
-    #     batch_size=args.batch_size * 2,
-    #     shuffle=False,
-    #     num_workers=args.num_workers,
-    # )
+    if rank == 0:
+        valid_loader = DataLoader(dataset[index[valid_idx:]], batch_size=args.batch_size * 2,
+                                  shuffle=False, num_workers=args.num_workers)
 
     shared_params = {
         "mlp_hidden_size": args.mlp_hidden_size,
@@ -194,33 +157,23 @@ def main(rank, world_size, args):
         "no_3drot": args.no_3drot,
         "not_origin": args.not_origin,
     }
-    model = DMCG(**shared_params).to(device)
-    model_without_ddp = model
-    args.disable_tqdm = False
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
-        model_without_ddp = model.module
 
-        args.checkpoint_dir = "" if rank != 0 else args.checkpoint_dir
-        args.enable_tb = False if rank != 0 else args.enable_tb
-        args.disable_tqdm = rank != 0
+    model = DMCG(**shared_params).to(device)
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
+    model_without_ddp = model.module
+    args.checkpoint_dir = "" if rank != 0 else args.checkpoint_dir
+    args.enable_tb = False if rank != 0 else args.enable_tb
+    args.disable_tqdm = rank != 0
 
     num_params = sum(p.numel() for p in model_without_ddp.parameters())
     print(f"#Params: {num_params}")
-    if args.use_adamw:
-        optimizer = optim.AdamW(
-            model_without_ddp.parameters(),
-            lr=args.lr,
-            betas=(0.9, args.beta2),
-            weight_decay=args.weight_decay,
-        )
-    else:
-        optimizer = optim.Adam(
-            model_without_ddp.parameters(),
-            lr=args.lr,
-            betas=(0.9, args.beta2),
-            weight_decay=args.weight_decay,
-        )
+
+    optimizer = optim.AdamW(
+        model_without_ddp.parameters(),
+        lr=args.lr,
+        betas=(0.9, args.beta2),
+        weight_decay=args.weight_decay,
+    )
 
     if not args.lr_warmup:
         scheduler = LambdaLR(optimizer, lambda x: 1.0)
@@ -238,23 +191,17 @@ def main(rank, world_size, args):
     dist.barrier()
 
     for epoch in range(1, args.epochs + 1):
-        if args.distributed:
-            sampler_train.set_epoch(epoch)
+        sampler_train.set_epoch(epoch)
         CosineBeta.step(epoch - 1)
         print("=====Epoch {}".format(epoch))
         print("Training...")
         loss_dict = train(model, device, train_loader, optimizer, scheduler, args)
         if rank == 0:
             print("Evaluating...")
-            train_pref = evaluate(model, device, train_loader_dev, args)
             valid_pref = evaluate(model, device, valid_loader, args)
-            # test_pref = evaluate(model, device, test_loader, args)
             if args.checkpoint_dir:
                 print(f"Setting {os.path.basename(os.path.normpath(args.checkpoint_dir))}...")
-                # print(f"Train: {train_pref} Validation: {valid_pref} Test: {test_pref}")
-            train_curve.append(train_pref)
             valid_curve.append(valid_pref)
-            # test_curve.append(test_pref)
 
             logs = {"Train": train_pref, "Valid": valid_pref}
             with io.open(
@@ -262,15 +209,17 @@ def main(rank, world_size, args):
             ) as tgt:
                 print(json.dumps(logs), file=tgt)
 
-            checkpoint = {
-                "epoch": epoch,
-                "model_state_dict": model_without_ddp.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "scheduler_state_dict": scheduler.state_dict(),
-                "args": args,
-            }
             if epoch % args.ckpt_interval == 0:
+                checkpoint = {
+                    "epoch": epoch,
+                    "model_state_dict": model_without_ddp.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "args": args,
+                }
+
                 torch.save(checkpoint, os.path.join(args.checkpoint_dir, f"checkpoint_{epoch}.pt"))
+
             if args.enable_tb:
                 tb_writer.add_scalar("evaluation/train", train_pref, epoch)
                 tb_writer.add_scalar("evaluation/valid", valid_pref, epoch)
@@ -281,8 +230,7 @@ def main(rank, world_size, args):
     best_val_epoch = np.argmin(np.array(valid_curve))
     if args.checkpoint_dir and args.enable_tb:
         tb_writer.close()
-    if args.distributed:
-        torch.distributed.destroy_process_group()
+    torch.distributed.destroy_process_group()
     print("Finished traning!")
     print(f"Best validation epoch: {best_val_epoch+1}")
     print(f"Best validation score: {valid_curve[best_val_epoch]}")
@@ -327,7 +275,6 @@ if __name__ == "__main__":
     parser.add_argument("--enable_tb", action="store_true", default=True)
 
     parser.add_argument("--train_size", type=float, default=0.8)
-    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--aux_loss", type=float, default=0.1)  # 0.2
     parser.add_argument("--train_subset", action="store_true", default=False)
     parser.add_argument("--extend_edge", action="store_true", default=False)
@@ -356,8 +303,6 @@ if __name__ == "__main__":
     parser.add_argument("--no_3drot", action="store_true", default=True)
 
     args = parser.parse_args()
-
-    # os.environ['NCCL_SHM_DISABLE'] = '1'
     world_size = torch.cuda.device_count()
 
     mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)
