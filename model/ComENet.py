@@ -9,9 +9,9 @@
 
 import sys
 from torch_cluster import radius_graph
-from torch_geometric.nn import GraphConv, GraphNorm
+from torch_geometric.nn import GraphConv, GraphNorm, MessagePassing, inits
 from torch_geometric.nn.acts import swish
-from torch_geometric.nn import inits
+from torch_geometric.utils import softmax
 
 from .comenet import dist_calc, angle_emb, torsion_emb
 
@@ -118,6 +118,43 @@ class EdgeGraphConv(GraphConv):
         return x_j if edge_weight is None else edge_weight * x_j
 
 
+class GraphAttentionConv(MessagePassing):
+    def __init__(self, hidden_dim, heads=4, dropout=0.):
+        super(GraphAttentionConv, self).__init__()
+        assert hidden_dim % heads == 0
+        self.hidden_dim = hidden_dim
+        self.heads = heads
+        self.node_dim = 0
+        self.attention_drop = nn.Dropout(dropout)
+
+        self.query = nn.Linear(hidden_dim, heads * int(hidden_dim / heads))
+        self.key = nn.Linear(hidden_dim, heads * int(hidden_dim / heads))
+        self.value = nn.Linear(hidden_dim, heads * int(hidden_dim / heads))
+
+    def reset_parameters(self):
+        nn.init.xavier_uniform_(self.query.weight.data)
+        nn.init.xavier_uniform_(self.key.weight.data)
+        nn.init.xavier_uniform_(self.value.weight.data)
+
+    def forward(self, x, edge_index, edge_attr, size=None):
+        pseudo = edge_attr.unsqueeze(-1) if edge_attr.dim() == 1 else edge_attr
+        return self.propagate(edge_index=edge_index, size=size, x=x, pseudo=pseudo)
+
+    def message(self, edge_index_i, x_i, x_j, pseudo, size_i):
+        query = self.query(x_i).view(-1, self.heads, int(self.hidden_dim / self.heads))
+        key = self.key(x_j + pseudo).view(-1, self.heads, int(self.hidden_dim / self.heads))
+        value = self.value(x_j + pseudo).view(-1, self.heads, int(self.hidden_dim / self.heads))
+
+        alpha = (query * key).sum(dim=-1) / math.sqrt(int(self.hidden_dim / self.heads))
+        alpha = softmax(alpha, edge_index_i, num_nodes=size_i)
+        alpha = self.attention_drop(alpha.view(-1, self.heads, 1))
+
+        return alpha * value
+
+    def update(self, aggr_out):
+        aggr_out = aggr_out.view(-1, self.heads * int(self.hidden_dim / self.heads))
+        return aggr_out
+
 class InterBock(nn.Module):
     def __init__(self,
                  hidden_channels,
@@ -130,8 +167,11 @@ class InterBock(nn.Module):
         super(InterBock, self).__init__()
         self.act = act
 
-        self.conv1 = EdgeGraphConv(hidden_channels, hidden_channels)
-        self.conv2 = EdgeGraphConv(hidden_channels, hidden_channels)
+        # self.conv1 = EdgeGraphConv(hidden_channels, hidden_channels)
+        # self.conv2 = EdgeGraphConv(hidden_channels, hidden_channels)
+
+        self.conv1 = GraphAttentionConv(hidden_channels, heads=4, dropout=0.1)
+        self.conv2 = GraphAttentionConv(hidden_channels, heads=4, dropout=0.1)
 
         self.linear1 = Linear(hidden_channels, hidden_channels)
         self.linear2 = Linear(hidden_channels, hidden_channels)
