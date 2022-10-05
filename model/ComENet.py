@@ -27,6 +27,22 @@ from math import sqrt
 import numpy as np
 
 
+class BertLayerNorm(nn.Module):
+    def __init__(self, hidden_dim, eps=1e-12):
+        super(BertLayerNorm, self).__init__()
+        self.shape = torch.Size((hidden_dim,))
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_dim))
+        self.bias = nn.Parameter(torch.zeros(hidden_dim))
+
+    def forward(self, x):
+        u = x.mean(-1, keepdim=True)
+        s = (x - u).pow(2).mean(-1, keepdim=True)
+        x = (x - u) / torch.sqrt(s + self.eps)
+        x = self.weight * x + self.bias
+        return x
+
+
 class Linear(nn.Module):
     def __init__(self, in_channels, out_channels, bias=True,
                  weight_initializer='glorot',
@@ -172,6 +188,8 @@ class InterBock(nn.Module):
 
         self.conv1 = GraphAttentionConv(hidden_channels, heads=4, dropout=0.1)
         self.conv2 = GraphAttentionConv(hidden_channels, heads=4, dropout=0.1)
+        self.layernorm1 = BertLayerNorm(hidden_channels, eps=1e-12)
+        self.layernorm2 = BertLayerNorm(hidden_channels, eps=1e-12)
 
         self.linear1 = Linear(hidden_channels, hidden_channels)
         self.linear2 = Linear(hidden_channels, hidden_channels)
@@ -195,7 +213,7 @@ class InterBock(nn.Module):
         self.linear1.reset_parameters()
         self.linear2.reset_parameters()
         self.linear.reset_parameters()
-        self.linear_cat. reset_parameters()
+        self.linear_cat.reset_parameters()
         self.lin_feat1.reset_parameters()
         self.lin_feat2.reset_parameters()
         for lin in self.linears:
@@ -210,7 +228,8 @@ class InterBock(nn.Module):
         # print('lin_feat1', torch.cuda.memory_allocated())
         h1 = self.conv1(x, edge_index, feature1)
         # print('conv1', torch.cuda.memory_allocated())
-        h1 = self.linear1(h1)
+        h1 = self.layernorm1(self.linear1(h1)) + self.linear1(h1)
+
         # print('linear1', torch.cuda.memory_allocated())
         h1 = self.act(h1)
 
@@ -218,7 +237,7 @@ class InterBock(nn.Module):
         # print('lin_feat2', torch.cuda.memory_allocated())
         h2 = self.conv2(x, edge_index, feature2)
         # print('conv2', torch.cuda.memory_allocated())
-        h2 = self.linear2(h2)
+        h2 = self.layernorm2(self.linear2(h2)) + self.linear2(h2)
         # print('linear2', torch.cuda.memory_allocated())
         h2 = self.act(h2)
 
