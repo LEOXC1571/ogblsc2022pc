@@ -8,7 +8,6 @@
 # Description:
 
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 import argparse
 import torch
 from torch_geometric.data import DataLoader
@@ -32,6 +31,8 @@ import json
 from collections import defaultdict
 from torch.utils.data import DistributedSampler
 
+# os.environ['NCCL_SHM_DISABLE'] = '1'
+# os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
 
 def train(model, device, loader, optimizer, scheduler, args):
     model.train()
@@ -45,7 +46,7 @@ def train(model, device, loader, optimizer, scheduler, args):
         else:
             atom_pred_list, extra_output = model(batch)
             optimizer.zero_grad()
-            loss, loss_dict = model.module.compute_loss(atom_pred_list, extra_output, batch, args)
+            loss, loss_dict = model.compute_loss(atom_pred_list, extra_output, batch, args)
             loss.backward()
             if args.grad_norm is not None:
                 nn.utils.clip_grad_norm_(model.parameters(), args.grad_norm)
@@ -114,7 +115,7 @@ def main(rank, world_size, args):
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
 
-    dataset = PCQM4Mv2Dataset_3D(root='../../../../data/xc/molecule_datasets/pcqm4m-v2')
+    dataset = PCQM4Mv2Dataset_3D(root='/home/tiger/lsc2022self/dataset/pcqm4m-v2')
     split_idx = dataset.get_idx_split()
     index = torch.LongTensor(random.sample(range(len(split_idx['train'])), int(len(split_idx['train'])/4)))
     valid_idx = int(len(index) * 0.8)
@@ -160,16 +161,16 @@ def main(rank, world_size, args):
 
     model = DMCG(**shared_params).to(device)
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
-    model_without_ddp = model.module
+    # model = model.module
     args.checkpoint_dir = "" if rank != 0 else args.checkpoint_dir
     args.enable_tb = False if rank != 0 else args.enable_tb
     args.disable_tqdm = rank != 0
 
-    num_params = sum(p.numel() for p in model_without_ddp.parameters())
+    num_params = sum(p.numel() for p in model.parameters())
     print(f"#Params: {num_params}")
 
     optimizer = optim.AdamW(
-        model_without_ddp.parameters(),
+        model.parameters(),
         lr=args.lr,
         betas=(0.9, args.beta2),
         weight_decay=args.weight_decay,
@@ -202,26 +203,27 @@ def main(rank, world_size, args):
             if args.checkpoint_dir:
                 print(f"Setting {os.path.basename(os.path.normpath(args.checkpoint_dir))}...")
             valid_curve.append(valid_pref)
-
-            logs = {"Train": train_pref, "Valid": valid_pref}
+            # "Train": train_pref
+            logs = {"Valid": valid_pref}
             with io.open(
                 os.path.join(args.checkpoint_dir, "log.txt"), "a", encoding="utf8", newline="\n"
             ) as tgt:
                 print(json.dumps(logs), file=tgt)
 
+            # ddp save
             if epoch % args.ckpt_interval == 0:
                 checkpoint = {
                     "epoch": epoch,
-                    "model_state_dict": model_without_ddp.state_dict(),
+                    "model_state_dict": model.module.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
-                    "args": args,
+                    # "args": args,
                 }
 
                 torch.save(checkpoint, os.path.join(args.checkpoint_dir, f"checkpoint_{epoch}.pt"))
 
             if args.enable_tb:
-                tb_writer.add_scalar("evaluation/train", train_pref, epoch)
+                #tb_writer.add_scalar("evaluation/train", train_pref, epoch)
                 tb_writer.add_scalar("evaluation/valid", valid_pref, epoch)
                 # tb_writer.add_scalar("evaluation/test", test_pref, epoch)
                 for k, v in loss_dict.items():
@@ -261,7 +263,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_layer_norm", action="store_true", default=False)
 
     # parser.add_argument("--log-dir", type=str, default="", help="tensorboard log directory")
-    parser.add_argument("--checkpoint_dir", type=str, default='../../../../data/xc/ogblsc/conf_ckpt')
+    parser.add_argument("--checkpoint_dir", type=str, default='conf_ckpt')
     parser.add_argument("--ckpt_interval", type=int, default=20)
     parser.add_argument("--log_interval", type=int, default=100)
     parser.add_argument("--dropout", type=float, default=0.1)  # 0.2
@@ -305,4 +307,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     world_size = torch.cuda.device_count()
 
+    PCQM4Mv2Dataset_3D(root='/home/tiger/lsc2022self/dataset/pcqm4m-v2')
     mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)
