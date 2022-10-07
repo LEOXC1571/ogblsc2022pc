@@ -186,8 +186,10 @@ class InterBock(nn.Module):
         # self.conv1 = EdgeGraphConv(hidden_channels, hidden_channels)
         # self.conv2 = EdgeGraphConv(hidden_channels, hidden_channels)
 
-        self.conv1 = GraphAttentionConv(hidden_channels, heads=4, dropout=0.1)
-        self.conv2 = GraphAttentionConv(hidden_channels, heads=4, dropout=0.1)
+        self.conv1 = GraphAttentionConv(hidden_channels, heads=4, dropout=0.)
+        self.conv2 = GraphAttentionConv(hidden_channels, heads=4, dropout=0.)
+        self.layernorm1 = BertLayerNorm(hidden_channels, eps=1e-12)
+        self.layernorm2 = BertLayerNorm(hidden_channels, eps=1e-12)
         self.layernorm1 = BertLayerNorm(hidden_channels, eps=1e-12)
         self.layernorm2 = BertLayerNorm(hidden_channels, eps=1e-12)
 

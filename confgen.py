@@ -121,16 +121,18 @@ def main(rank, world_size, args):
     index = torch.LongTensor(random.sample(range(len(split_idx['train'])), int(len(split_idx['train'])/4)))
     valid_idx = int(len(index) * 0.8)
     dataset_train = dataset[index[:valid_idx]]
+    dataset_valid = dataset[index[valid_idx:]]
 
+    del dataset
     sampler_train = DistributedSampler(dataset_train, num_replicas=world_size, rank=rank, shuffle=True)
     train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=False,
                               num_workers=args.num_workers, sampler=sampler_train)
 
-    if rank == 0:
-        valid_loader = DataLoader(dataset[index[valid_idx:]], batch_size=args.batch_size * 2,
+    del dataset_train
+    valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size,
                                   shuffle=False, num_workers=args.num_workers)
 
-    del dataset
+    del dataset_valid
 
     shared_params = {
         "mlp_hidden_size": args.mlp_hidden_size,
