@@ -170,10 +170,11 @@ def main(rank, world_size, args):
         ckpt = torch.load(os.path.join(args.checkpoint_dir, 'checkpoint.pt'))
         model.load_state_dict(ckpt['model_state_dict'])
     model = DistributedDataParallel(model, device_ids=[rank])
+    model_wo_ddp = model.module
 
 
     criterion = torch.nn.L1Loss().to(device)
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = optim.Adam(model_wo_ddp.parameters(), lr=args.lr)
     scheduler = StepLR(optimizer, step_size=30, gamma=0.25)
 
     if args.load_ckpt:
@@ -233,7 +234,7 @@ def main(rank, world_size, args):
                 if args.checkpoint_dir != '':
                     print('Saving checkpoint...')
                     checkpoint = {'epoch': epoch,
-                                  'model_state_dict': model.state_dict(),
+                                  'model_state_dict': model_wo_ddp.state_dict(),
                                   'optimizer_state_dict': optimizer.state_dict(),
                                   'scheduler_state_dict': scheduler.state_dict(),
                                   'best_val_mae': best_valid_mae,

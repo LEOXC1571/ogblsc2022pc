@@ -8,9 +8,13 @@
 # Description:
 
 import os
+<<<<<<< HEAD
+=======
+os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
+>>>>>>> ff481610a47f6a4a130a33cb757ce67a5fd79176
 import argparse
 import torch
-from torch_geometric.data import DataLoader
+from torch_geometric.loader import DataLoader
 import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
@@ -103,7 +107,9 @@ def evaluate(model, device, loader, args):
 
 
 def main(rank, world_size, args):
-    dist.init_process_group(backend='nccl', init_method='tcp://127.0.0.1:23439', world_size=world_size, rank=rank)
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '10192'
+    dist.init_process_group(backend='nccl', init_method='env://', world_size=world_size, rank=rank)
 
     CosineBeta = Cosinebeta(args)
     np.random.seed(42)
@@ -120,14 +126,18 @@ def main(rank, world_size, args):
     index = torch.LongTensor(random.sample(range(len(split_idx['train'])), int(len(split_idx['train'])/4)))
     valid_idx = int(len(index) * 0.8)
     dataset_train = dataset[index[:valid_idx]]
+    dataset_valid = dataset[index[valid_idx:]]
 
+    del dataset
     sampler_train = DistributedSampler(dataset_train, num_replicas=world_size, rank=rank, shuffle=True)
     train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=False,
                               num_workers=args.num_workers, sampler=sampler_train)
 
-    if rank == 0:
-        valid_loader = DataLoader(dataset[index[valid_idx:]], batch_size=args.batch_size * 2,
+    del dataset_train
+    valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size,
                                   shuffle=False, num_workers=args.num_workers)
+
+    del dataset_valid
 
     shared_params = {
         "mlp_hidden_size": args.mlp_hidden_size,
@@ -160,8 +170,13 @@ def main(rank, world_size, args):
     }
 
     model = DMCG(**shared_params).to(device)
+<<<<<<< HEAD
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
     # model = model.module
+=======
+    model = DistributedDataParallel(model, device_ids=[rank])
+    model_without_ddp = model.module
+>>>>>>> ff481610a47f6a4a130a33cb757ce67a5fd79176
     args.checkpoint_dir = "" if rank != 0 else args.checkpoint_dir
     args.enable_tb = False if rank != 0 else args.enable_tb
     args.disable_tqdm = rank != 0
@@ -203,7 +218,11 @@ def main(rank, world_size, args):
             if args.checkpoint_dir:
                 print(f"Setting {os.path.basename(os.path.normpath(args.checkpoint_dir))}...")
             valid_curve.append(valid_pref)
+<<<<<<< HEAD
             # "Train": train_pref
+=======
+
+>>>>>>> ff481610a47f6a4a130a33cb757ce67a5fd79176
             logs = {"Valid": valid_pref}
             with io.open(
                 os.path.join(args.checkpoint_dir, "log.txt"), "a", encoding="utf8", newline="\n"
@@ -223,7 +242,10 @@ def main(rank, world_size, args):
                 torch.save(checkpoint, os.path.join(args.checkpoint_dir, f"checkpoint_{epoch}.pt"))
 
             if args.enable_tb:
+<<<<<<< HEAD
                 #tb_writer.add_scalar("evaluation/train", train_pref, epoch)
+=======
+>>>>>>> ff481610a47f6a4a130a33cb757ce67a5fd79176
                 tb_writer.add_scalar("evaluation/valid", valid_pref, epoch)
                 # tb_writer.add_scalar("evaluation/test", test_pref, epoch)
                 for k, v in loss_dict.items():
@@ -241,6 +263,8 @@ def main(rank, world_size, args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('--rank', type=int, default=4)
+    parser.add_argument("--local_rank", type=int, default=-1)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--distributed", action="store_true", default=False)
     parser.add_argument("--epochs", type=int, default=100)
@@ -287,7 +311,6 @@ if __name__ == "__main__":
     parser.add_argument("--vae_beta_max", type=float, default=0.05)
     parser.add_argument("--vae_beta_min", type=float, default=0.0001)
     parser.add_argument("--pred_pos_residual", action="store_true", default=True)
-    parser.add_argument("--local_rank", type=int, default=0)
     parser.add_argument("--node_attn", action="store_true", default=True)
     parser.add_argument("--global_attn", action="store_true", default=False)
     parser.add_argument("--shared_decoder", action="store_true", default=False)
@@ -305,6 +328,7 @@ if __name__ == "__main__":
     parser.add_argument("--no_3drot", action="store_true", default=True)
 
     args = parser.parse_args()
+    os.environ['NCCL_SHM_DISABLE'] = '1'
     world_size = torch.cuda.device_count()
 
     PCQM4Mv2Dataset_3D(root='/home/tiger/lsc2022self/dataset/pcqm4m-v2')
