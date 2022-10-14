@@ -35,7 +35,7 @@ _REDUCER_NAMES = {
 class DMCG(nn.Module):
     def __init__(
         self,
-        mlp_hidden_size: int = 1024,
+        mlp_hidden_size: int = 512,
         mlp_layers: int = 2,
         latent_size: int = 256,
         use_layer_norm: bool = False,

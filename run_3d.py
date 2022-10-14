@@ -11,7 +11,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 import time
-os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
+# os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 import torch
 import torch.optim as optim
@@ -22,7 +22,7 @@ from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR
 from torch_geometric.loader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data.distributed import DistributedSampler
-
+    
 from ogb.lsc import PCQM4Mv2Evaluator
 from utils import sdf2graph, add_conf
 
@@ -133,9 +133,9 @@ def main(rank, world_size, args):
     split_idx = dataset.get_idx_split()
 
     valid_idx = int(len(split_idx['train']) * 0.98)
-
+    print(rank)
     if rank == 0 and args.conf_gen and args.conf_ckpt is not None:
-        if not os.path.exists('ckpt/pos_ckpt.pt'):
+        if not os.path.exists(os.path.join(args.checkpoint_dir, 'pos_ckpt.pt')):
             from model import DMCG
             gen_model = DMCG().to(device)
             conf_ckpt = torch.load(args.conf_ckpt, map_location=device)["model_state_dict"]
@@ -154,14 +154,16 @@ def main(rank, world_size, args):
                 'idx': idx,
                 'pos': mol_pred
             }
-            torch.save(pos_ckpt, 'ckpt/pos_ckpt.pt')
+            torch.save(pos_ckpt, os.path.join(args.checkpoint_dir, 'pos_ckpt.pt'))
             del gen_model, conf_ckpt, cur_state_dict, del_keys, unk_loader, mol_pred, idx
         else:
             pass
+    else:
+        print("Some error")
 
-    train_sampler = DistributedSampler(dataset[split_idx['train']][:valid_idx], num_replicas=world_size,
+    train_sampler = DistributedSampler(dataset[split_idx['train']], num_replicas=world_size,
                                        rank=rank, shuffle=True)
-    train_loader = DataLoader(dataset[split_idx['train']][:valid_idx], batch_size=args.batch_size, shuffle=False,
+    train_loader = DataLoader(dataset[split_idx['train']], batch_size=args.batch_size, shuffle=False,
                               num_workers=args.num_workers, sampler=train_sampler)
 
     model = import_model(args)
@@ -183,13 +185,10 @@ def main(rank, world_size, args):
 
     if rank == 0:
         evaluator = PCQM4Mv2Evaluator()
-        valid_loader = DataLoader(dataset[split_idx['train']][valid_idx:], batch_size=args.batch_size,
+        valid_loader = DataLoader(dataset[split_idx['valid']], batch_size=args.batch_size,
                                   shuffle=False, num_workers=args.num_workers)
 
         pos_ckpt = torch.load('ckpt/pos_ckpt.pt')
-
-        if args.checkpoint_dir != '':
-            os.makedirs(args.checkpoint_dir, exist_ok=True)
 
         if args.log_dir != '':
             writer = SummaryWriter(log_dir=args.log_dir)
@@ -280,7 +279,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu', type=int, default=None)
     parser.add_argument('--rank', type=int, default=4)
-    parser.add_argument('--num_workers', type=int, default=1)
+    parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument("--local_rank", type=int, default=-1)
     parser.add_argument('--dataset_root', type=str, default='../../../../data/xc/molecule_datasets/pcqm4m-v2')
 
@@ -289,7 +288,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--batch_size', type=int, default=4096)
     parser.add_argument('--conf_gen', action='store_true', default=False)
-    parser.add_argument('--conf_ckpt', type=str, default='conf_ckpt/checkpoint_20.pt')
+    parser.add_argument('--conf_ckpt', type=str, default='conf_ckpt/checkpoint_80.pt')
     parser.add_argument('--load_ckpt', action='store_true', default=False)
 
     parser.add_argument('--gnn', type=str, default='ComENet')
@@ -308,8 +307,17 @@ if __name__ == '__main__':
     args = parser.parse_args()
     print(args)
 
+    if not os.path.exists(args.checkpoint_dir):
+        os.makedirs(args.checkpoint_dir, exist_ok = True)
+
+    if not os.path.exists(args.log_dir):
+        os.makedirs(args.log_dir, exist_ok = True)
+    
+
     os.environ['NCCL_SHM_DISABLE'] = '1'
     # PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
     world_size = torch.cuda.device_count()
-
-    mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)
+    if world_size == 1:
+        main(0, 1, args)
+    else:
+        mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)

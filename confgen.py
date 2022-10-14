@@ -8,10 +8,6 @@
 # Description:
 
 import os
-<<<<<<< HEAD
-=======
-os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
->>>>>>> ff481610a47f6a4a130a33cb757ce67a5fd79176
 import argparse
 import torch
 from torch_geometric.loader import DataLoader
@@ -128,16 +124,16 @@ def main(rank, world_size, args):
     dataset_train = dataset[index[:valid_idx]]
     dataset_valid = dataset[index[valid_idx:]]
 
-    del dataset
+    #del dataset
     sampler_train = DistributedSampler(dataset_train, num_replicas=world_size, rank=rank, shuffle=True)
     train_loader = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=False,
                               num_workers=args.num_workers, sampler=sampler_train)
 
-    del dataset_train
+    #del dataset_train
     valid_loader = DataLoader(dataset_valid, batch_size=args.batch_size,
-                                  shuffle=False, num_workers=args.num_workers)
+                                  shuffle=False)
 
-    del dataset_valid
+    #del dataset_valid
 
     shared_params = {
         "mlp_hidden_size": args.mlp_hidden_size,
@@ -170,13 +166,9 @@ def main(rank, world_size, args):
     }
 
     model = DMCG(**shared_params).to(device)
-<<<<<<< HEAD
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
-    # model = model.module
-=======
-    model = DistributedDataParallel(model, device_ids=[rank])
-    model_without_ddp = model.module
->>>>>>> ff481610a47f6a4a130a33cb757ce67a5fd79176
+    model = model.module
+
     args.checkpoint_dir = "" if rank != 0 else args.checkpoint_dir
     args.enable_tb = False if rank != 0 else args.enable_tb
     args.disable_tqdm = rank != 0
@@ -218,11 +210,6 @@ def main(rank, world_size, args):
             if args.checkpoint_dir:
                 print(f"Setting {os.path.basename(os.path.normpath(args.checkpoint_dir))}...")
             valid_curve.append(valid_pref)
-<<<<<<< HEAD
-            # "Train": train_pref
-=======
-
->>>>>>> ff481610a47f6a4a130a33cb757ce67a5fd79176
             logs = {"Valid": valid_pref}
             with io.open(
                 os.path.join(args.checkpoint_dir, "log.txt"), "a", encoding="utf8", newline="\n"
@@ -233,7 +220,7 @@ def main(rank, world_size, args):
             if epoch % args.ckpt_interval == 0:
                 checkpoint = {
                     "epoch": epoch,
-                    "model_state_dict": model.module.state_dict(),
+                    "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
                     # "args": args,
@@ -242,10 +229,7 @@ def main(rank, world_size, args):
                 torch.save(checkpoint, os.path.join(args.checkpoint_dir, f"checkpoint_{epoch}.pt"))
 
             if args.enable_tb:
-<<<<<<< HEAD
                 #tb_writer.add_scalar("evaluation/train", train_pref, epoch)
-=======
->>>>>>> ff481610a47f6a4a130a33cb757ce67a5fd79176
                 tb_writer.add_scalar("evaluation/valid", valid_pref, epoch)
                 # tb_writer.add_scalar("evaluation/test", test_pref, epoch)
                 for k, v in loss_dict.items():
@@ -268,7 +252,7 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--distributed", action="store_true", default=False)
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--num_workers", type=int, default=1)
+    parser.add_argument("--num_workers", type=int, default=0)
 
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--lr_warmup", action="store_true", default=True)
@@ -328,8 +312,16 @@ if __name__ == "__main__":
     parser.add_argument("--no_3drot", action="store_true", default=True)
 
     args = parser.parse_args()
+    print(args)
     os.environ['NCCL_SHM_DISABLE'] = '1'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
+
     world_size = torch.cuda.device_count()
 
     PCQM4Mv2Dataset_3D(root='/home/tiger/lsc2022self/dataset/pcqm4m-v2')
-    mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)
+    #mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)
+
+    if world_size > 1:
+        mp.spawn(main, nprocs=world_size, args=(world_size, args))
+    else:
+        main(0, 1, args)

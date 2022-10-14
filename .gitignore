@@ -129,11 +129,10 @@ dmypy.json
 .pyre/
 
 .vscode/
-# dataset
-dataset/
 
 # checkpoint
 ckpt/
+conf_ckpt/
 
 # log
 log/
