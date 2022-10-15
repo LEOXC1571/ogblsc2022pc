@@ -32,5 +32,5 @@ def add_conf(model, loader, device):
         temp_mol.append(pred[-1])
         node_batch.append(batch.batch + step * 2048)
     mol_pred = split_tensor(torch.cat(temp_mol), torch.cat(node_batch))
-    idx = list(range(3378606, 3746620))
+    idx = list(range(3746620))
     return mol_pred, idx

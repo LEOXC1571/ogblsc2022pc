@@ -11,7 +11,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 import time
-# os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '1,2'
 
 import torch
 import torch.optim as optim
@@ -132,10 +132,10 @@ def main(rank, world_size, args):
     dataset = PCQM4Mv2Dataset_3D(root=args.dataset_root, sdf2graph=sdf2graph)
     split_idx = dataset.get_idx_split()
 
-    valid_idx = int(len(split_idx['train']) * 0.98)
-    print(rank)
+    # valid_idx = int(len(split_idx['train']) * 0.98)
     if rank == 0 and args.conf_gen and args.conf_ckpt is not None:
         if not os.path.exists(os.path.join(args.checkpoint_dir, 'pos_ckpt.pt')):
+            print('Generating')
             from model import DMCG
             gen_model = DMCG().to(device)
             conf_ckpt = torch.load(args.conf_ckpt, map_location=device)["model_state_dict"]
@@ -147,8 +147,10 @@ def main(rank, world_size, args):
             for k in del_keys:
                 del conf_ckpt[k]
             gen_model.load_state_dict(conf_ckpt)
-            unk_loader = DataLoader(dataset[len(split_idx['train']):], batch_size=2048, shuffle=False,
+            print(1)
+            unk_loader = DataLoader(dataset, batch_size=2048, shuffle=False,
                                       num_workers=args.num_workers)
+            print(2)
             mol_pred, idx = add_conf(gen_model, unk_loader, device)
             pos_ckpt = {
                 'idx': idx,
@@ -158,8 +160,6 @@ def main(rank, world_size, args):
             del gen_model, conf_ckpt, cur_state_dict, del_keys, unk_loader, mol_pred, idx
         else:
             pass
-    else:
-        print("Some error")
 
     train_sampler = DistributedSampler(dataset[split_idx['train']], num_replicas=world_size,
                                        rank=rank, shuffle=True)
